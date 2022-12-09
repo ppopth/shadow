@@ -65,6 +65,7 @@ hosts:
 - [`network.graph.file.compression`](#networkgraphfilecompression)
 - [`network.use_shortest_path`](#networkuse_shortest_path)
 - [`experimental`](#experimental)
+- [`experimental.apply_cpu_delay`](#experimentalapply_cpu_delay)
 - [`experimental.host_heartbeat_interval`](#experimentalhost_heartbeat_interval)
 - [`experimental.host_heartbeat_log_info`](#experimentalhost_heartbeat_log_info)
 - [`experimental.host_heartbeat_log_level`](#experimentalhost_heartbeat_log_level)
@@ -301,6 +302,19 @@ nodes.
 
 Experimental experiment settings. Unstable and may change or be removed at any
 time, regardless of Shadow version.
+
+#### `experimental.apply_cpu_delay`
+
+Default: false  
+Type: Bool
+
+Apply the CPU delay measured during the computation of the managed processes.
+Enabling this option makes Shadow nondeterministic and the applied CPU delay
+depends on how fast the CPU on which the simulation is run is.
+
+Ignored when
+[`general.model_unblocked_syscall_latency`](#generalmodel_unblocked_syscall_latency)
+is true.
 
 #### `experimental.host_heartbeat_interval`
 

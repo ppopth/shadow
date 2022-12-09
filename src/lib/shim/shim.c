@@ -73,6 +73,62 @@ static int* _shim_allowNativeSyscallsFlag() {
     return shimtlsvar_ptr(&v, sizeof(bool));
 }
 
+static CSimulationTime* _shim_latestDelay() {
+    static ShimTlsVar v = {0};
+    return shimtlsvar_ptr(&v, sizeof(CSimulationTime));
+}
+
+static struct timespec* _shim_realEventTime() {
+    static ShimTlsVar v = {0};
+    return shimtlsvar_ptr(&v, sizeof(struct timespec));
+}
+
+// Reset the thread delay.
+void shim_resetDelay() {
+    bool oldNativeSyscallFlag = shim_swapAllowNativeSyscalls(true);
+
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, _shim_realEventTime());
+    *_shim_latestDelay() = 0;
+
+    shim_swapAllowNativeSyscalls(oldNativeSyscallFlag);
+}
+
+// Get the thread delay.
+static CSimulationTime shim_getDelay() {
+    bool oldNativeSyscallFlag = shim_swapAllowNativeSyscalls(true);
+
+    struct timespec t;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t);
+
+    CSimulationTime delay = simtime_from_timespec(t) - simtime_from_timespec(*_shim_realEventTime());
+    CSimulationTime* latest_delay = _shim_latestDelay();
+    // It's possible that the time from clock_gettime can be earlier than the
+    // one we got earlier, so we will return only the latest one.
+    if (delay > *latest_delay) {
+        *latest_delay = delay;
+    }
+
+    shim_swapAllowNativeSyscalls(oldNativeSyscallFlag);
+    return *latest_delay;
+}
+
+// Get the time with CPU delay added if it's enabled.
+CEmulatedTime shim_getTime() {
+    ShimShmemHost* mem = shim_hostSharedMem();
+
+    // If that's unavailable, fail. This can happen during early init.
+    if (mem == NULL) {
+        return 0;
+    }
+
+    CEmulatedTime emulated_time = shimshmem_getEmulatedTime(mem);
+    if (shimshmem_getApplyCpuDelay(shim_hostSharedMem())) {
+        return emutime_add_simtime(emulated_time, shim_getDelay());
+    } else {
+        return emulated_time;
+    }
+}
+
 // Held from the time of starting to initialize _startThread, to being done with
 // it. i.e. ensure we don't try to start more than one thread at once.
 //

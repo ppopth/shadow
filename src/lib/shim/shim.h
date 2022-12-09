@@ -64,4 +64,7 @@ ShimShmemHost* shim_hostSharedMem();
 // exits.
 void shim_freeSignalStack();
 
+void shim_resetDelay();
+CEmulatedTime shim_getTime();
+
 #endif // SHD_SHIM_SHIM_H_

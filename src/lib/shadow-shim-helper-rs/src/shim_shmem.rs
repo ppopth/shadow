@@ -57,6 +57,10 @@ pub struct HostShmem {
 
     // Whether to model unblocked syscalls as taking non-zero time.
     // TODO: Move to a "ShimShmemGlobal" struct if we make one.
+    apply_cpu_delay: bool,
+
+    // Whether to model unblocked syscalls as taking non-zero time.
+    // TODO: Move to a "ShimShmemGlobal" struct if we make one.
     model_unblocked_syscall_latency: bool,
 
     // Maximum accumulated CPU latency before updating clock.
@@ -84,6 +88,7 @@ pub struct HostShmem {
 impl HostShmem {
     pub fn new(
         host_id: HostId,
+        apply_cpu_delay: bool,
         model_unblocked_syscall_latency: bool,
         max_unapplied_cpu_latency: SimulationTime,
         unblocked_syscall_latency: SimulationTime,
@@ -97,6 +102,7 @@ impl HostShmem {
                 unapplied_cpu_latency: SimulationTime::ZERO,
                 max_runahead_time: EmulatedTime::MIN,
             }),
+            apply_cpu_delay,
             model_unblocked_syscall_latency,
             max_unapplied_cpu_latency,
             unblocked_syscall_latency,
@@ -420,6 +426,7 @@ pub mod export {
     pub unsafe extern "C" fn shimshmemhost_init(
         host_mem: *mut ShimShmemHost,
         host_id: HostId,
+        apply_cpu_delay: bool,
         model_unblocked_syscall_latency: bool,
         max_unapplied_cpu_latency: CSimulationTime,
         unblocked_syscall_latency: CSimulationTime,
@@ -427,6 +434,7 @@ pub mod export {
     ) {
         let h = HostShmem::new(
             host_id,
+            apply_cpu_delay,
             model_unblocked_syscall_latency,
             SimulationTime::from_c_simtime(max_unapplied_cpu_latency).unwrap(),
             SimulationTime::from_c_simtime(unblocked_syscall_latency).unwrap(),
@@ -792,6 +800,15 @@ pub mod export {
     pub unsafe extern "C" fn shimshmem_resetUnappliedCpuLatency(lock: *mut ShimShmemHostLock) {
         let lock = unsafe { lock.as_mut().unwrap() };
         lock.unapplied_cpu_latency = SimulationTime::ZERO;
+    }
+
+    /// Get whether to apply the CPU delay.
+    #[no_mangle]
+    pub unsafe extern "C" fn shimshmem_getApplyCpuDelay(
+        host: *const ShimShmemHost,
+    ) -> bool {
+        let host = unsafe { host.as_ref().unwrap() };
+        host.apply_cpu_delay
     }
 
     /// Get whether to model latency of unblocked syscalls.

@@ -590,6 +590,7 @@ impl<'a> Manager<'a> {
                 init_sock_send_buf_size: host_info.send_buf_size,
                 autotune_send_buf: host_info.autotune_send_buf,
                 native_tsc_frequency: self.native_tsc_frequency,
+                apply_cpu_delay: self.config.apply_cpu_delay(),
                 model_unblocked_syscall_latency: self.config.model_unblocked_syscall_latency(),
                 max_unapplied_cpu_latency: self.config.max_unapplied_cpu_latency(),
                 unblocked_syscall_latency: self.config.unblocked_syscall_latency(),

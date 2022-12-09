@@ -65,6 +65,7 @@ pub struct HostParameters {
     pub init_sock_send_buf_size: u64,
     pub autotune_send_buf: bool,
     pub native_tsc_frequency: u64,
+    pub apply_cpu_delay: bool,
     pub model_unblocked_syscall_latency: bool,
     pub max_unapplied_cpu_latency: SimulationTime,
     pub unblocked_syscall_latency: SimulationTime,
@@ -209,6 +210,7 @@ impl Host {
 
         let host_shmem = HostShmem::new(
             params.id,
+            params.apply_cpu_delay,
             params.model_unblocked_syscall_latency,
             params.max_unapplied_cpu_latency,
             params.unblocked_syscall_latency,

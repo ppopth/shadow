@@ -109,6 +109,23 @@ long shim_native_syscall(long n, ...) {
     return rv;
 }
 
+static void _shim_continueShadow(struct IPCData* ipc, const ShimEvent* e) {
+    if (shimshmem_getApplyCpuDelay(shim_hostSharedMem())) {
+        // FIXME: I'm not sure if we really need the lock here.
+        ShimShmemHostLock* host_lock = shimshmemhost_lock(shim_hostSharedMem());
+        shimshmem_setEmulatedTime(shim_hostSharedMem(), shim_getTime());
+        shimshmemhost_unlock(shim_hostSharedMem(), &host_lock);
+    }
+    shimevent_sendEventToShadow(ipc, e);
+}
+
+static void _shim_waitForNextEvent(struct IPCData* ipc, ShimEvent* e, bool spin) {
+    shimevent_recvEventFromShadow(ipc, e, spin);
+    if (shimshmem_getApplyCpuDelay(shim_hostSharedMem())) {
+        shim_resetDelay();
+    }
+}
+
 static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
 
     struct IPCData* ipc = shim_thisThreadEventIPC();
@@ -116,7 +133,7 @@ static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
     trace("sending syscall %ld event on %p", syscall_event->event_data.syscall.syscall_args.number,
           ipc);
 
-    shimevent_sendEventToShadow(ipc, syscall_event);
+    _shim_continueShadow(ipc, syscall_event);
     SysCallReg rv = {0};
 
     // By default we assume Shadow will return quickly, and so should spin
@@ -125,7 +142,7 @@ static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
     while (true) {
         trace("waiting for event on %p", ipc);
         ShimEvent res = {0};
-        shimevent_recvEventFromShadow(ipc, &res, spin);
+        _shim_waitForNextEvent(ipc, &res, spin);
         trace("got response of type %d on %p", res.event_id, ipc);
 
         // Reset spin-flag to true. (May have been set to false by a SHD_SHIM_EVENT_BLOCK in the
@@ -136,7 +153,7 @@ static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
                 // Loop again, this time relinquishing the CPU while waiting for the next message.
                 spin = false;
                 // Ack the message.
-                shimevent_sendEventToShadow(ipc, &res);
+                _shim_continueShadow(ipc, &res);
                 break;
             }
             case SHD_SHIM_EVENT_SYSCALL_COMPLETE: {
@@ -167,7 +184,7 @@ static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
                           "syscallSupportsSaRestart:%d",
                           allSigactionsHadSaRestart, syscallSupportsSaRestart);
                     if (allSigactionsHadSaRestart && syscallSupportsSaRestart) {
-                        shimevent_sendEventToShadow(ipc, syscall_event);
+                        _shim_continueShadow(ipc, syscall_event);
                         continue;
                     }
                 }
@@ -194,7 +211,7 @@ static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
                     .event_id = SHD_SHIM_EVENT_SYSCALL_COMPLETE,
                     .event_data.syscall_complete.retval.as_i64 = syscall_rv,
                 };
-                shimevent_sendEventToShadow(ipc, &syscall_complete_event);
+                _shim_continueShadow(ipc, &syscall_complete_event);
                 break;
             }
             case SHD_SHIM_EVENT_CLONE_REQ:
@@ -211,7 +228,7 @@ static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
                 break;
             case SHD_SHIM_EVENT_ADD_THREAD_REQ: {
                 shim_newThreadStart(&res.event_data.add_thread_req.ipc_block);
-                shimevent_sendEventToShadow(
+                _shim_continueShadow(
                     ipc, &(ShimEvent){
                              .event_id = SHD_SHIM_EVENT_ADD_THREAD_PARENT_RES,
                          });

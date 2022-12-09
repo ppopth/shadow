@@ -131,6 +131,11 @@ impl ConfigOptions {
         }
     }
 
+    pub fn apply_cpu_delay(&self) -> bool {
+        // If unblocked syscall latency is enabled, we disable CPU latency.
+        self.experimental.apply_cpu_delay.unwrap() && !self.model_unblocked_syscall_latency()
+    }
+
     pub fn model_unblocked_syscall_latency(&self) -> bool {
         self.general.model_unblocked_syscall_latency.unwrap()
     }
@@ -465,6 +470,14 @@ pub struct ExperimentalOptions {
     #[clap(long, value_name = "name")]
     #[clap(help = EXP_HELP.get("scheduler").unwrap().as_str())]
     pub scheduler: Option<Scheduler>,
+
+    /// Apply the CPU delay measured during the computation of the managed processes. Enabling this
+    /// option makes Shadow nondeterministic and the applied CPU delay depends on how fast the CPU
+    /// on which the simulation is run is.
+    #[clap(hide_short_help = true)]
+    #[clap(long, value_name = "bool")]
+    #[clap(help = EXP_HELP.get("apply_cpu_delay").unwrap().as_str())]
+    pub apply_cpu_delay: Option<bool>,
 }
 
 impl ExperimentalOptions {
@@ -517,6 +530,7 @@ impl Default for ExperimentalOptions {
             strace_logging_mode: Some(StraceLoggingMode::Off),
             use_extended_yaml: Some(false),
             scheduler: Some(Scheduler::ThreadPerCore),
+            apply_cpu_delay: Some(false),
         }
     }
 }

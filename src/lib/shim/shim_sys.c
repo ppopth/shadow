@@ -18,14 +18,7 @@
 #include "main/host/syscall_numbers.h"
 
 static CEmulatedTime _shim_sys_get_time() {
-    ShimShmemHost* mem = shim_hostSharedMem();
-
-    // If that's unavailable, fail. This can happen during early init.
-    if (mem == NULL) {
-        return 0;
-    }
-
-    return shimshmem_getEmulatedTime(mem);
+    return shim_getTime();
 }
 
 uint64_t shim_sys_get_simtime_nanos() {
