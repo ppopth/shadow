@@ -258,6 +258,28 @@ SysCallCondition* managedthread_resume(ManagedThread* mthread) {
     utility_debugAssert(mthread->isRunning);
     utility_debugAssert(mthread->currentEvent.event_id != SHD_SHIM_EVENT_NULL);
 
+    if (shimshmem_getApplyCpuDelay(host_getSharedMem(thread_getHost(mthread->base)))) {
+        // If the CPU is unavailable at the time, delay resuming the thread.
+        const Host* host = worker_getCurrentHost();
+        utility_debugAssert(host_getID(host) == host_getID(thread_getHost(mthread->base)));
+        CEmulatedTime availableTime = host_getCpuTimeAvailable(host);
+        CEmulatedTime time = worker_getCurrentEmulatedTime();
+        if (time < availableTime) {
+            // Delay to when the CPU is available.
+            trace("Reschedule the thread to resume later because the CPU is unavailable "
+                  "(current time = %ld, CPU available time = %ld)",
+                  time, availableTime);
+            SysCallCondition* cond = syscallcondition_new((Trigger){.type = TRIGGER_NONE});
+            syscallcondition_setTimeout(cond, host, availableTime);
+            SysCallReturn scr = syscallreturn_makeBlocked(cond, false);
+
+            worker_setCurrentEmulatedTime(availableTime);
+            return syscallreturn_blocked(&scr)->cond;
+        }
+    }
+
+    CEmulatedTime startTime = worker_getCurrentEmulatedTime();
+
     _managedthread_syncAffinityWithWorker(mthread);
 
     // Flush any pending writes, e.g. from a previous mthread that exited without flushing.
@@ -360,6 +382,27 @@ SysCallCondition* managedthread_resume(ManagedThread* mthread) {
 
         /* previous event was handled, wait for next one */
         _managedthread_waitForNextEvent(mthread, &mthread->currentEvent);
+
+        if (shimshmem_getApplyCpuDelay(host_getSharedMem(thread_getHost(mthread->base)))) {
+            CEmulatedTime time = worker_getCurrentEmulatedTime();
+
+            // If the received event is SHD_SHIM_EVENT_STOP, the shim didn't
+            // update the emulated time because the managed thread didn't have
+            // a chance to run the syscall. In which case, the delay between
+            // the last syscall and when the thread stops is lost.
+            // FIXME: The threshold of 1 ms should be configurable.
+            if (time > startTime + SIMTIME_ONE_MILLISECOND) {
+                const Host* host = worker_getCurrentHost();
+                utility_debugAssert(host_getID(host) == host_getID(thread_getHost(mthread->base)));
+
+                // We will delay resuming the thread in case that there is a time shift.
+                SysCallCondition* cond = syscallcondition_new((Trigger){.type = TRIGGER_NONE});
+                syscallcondition_setTimeout(cond, host, time);
+                SysCallReturn scr = syscallreturn_makeBlocked(cond, false);
+
+                return syscallreturn_blocked(&scr)->cond;
+            }
+        }
     }
 }
 

@@ -119,6 +119,15 @@ void thread_resume(Thread* thread) {
 
     SysCallCondition* cond = managedthread_resume(thread->mthread);
 
+    // Mark that the CPU will be unavailable until newTime
+    if (shimshmem_getApplyCpuDelay(host_getSharedMem(thread_getHost(thread)))) {
+        const Host* host = worker_getCurrentHost();
+        trace("CPU available time = %ld, Current time = %ld",
+                host_getCpuTimeAvailable(host),
+                worker_getCurrentEmulatedTime());
+        host_setCpuTimeAvailable(host, worker_getCurrentEmulatedTime());
+    }
+
     // Now we're done with old condition.
     if (thread->cond) {
         syscallcondition_unref(thread->cond);

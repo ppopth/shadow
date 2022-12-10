@@ -128,6 +128,13 @@ pub struct Host {
 
     cpu: RefCell<Option<Cpu>>,
 
+    // TODO: We try to use the concept of the time that the CPU is available.
+    // At first Cpu struct seems to be the one we want, but it's too hard to
+    // understand and it has some logic that we don't understand and don't
+    // want to touch. For example, rescheduling the event when the CPU is
+    // blocked. We hope we can remedy this situation later.
+    cpu_time_available: Cell<EmulatedTime>,
+
     // TODO: Use a Rust address type.
     default_address: RefCell<SyncSendPointer<cshadow::Address>>,
 
@@ -243,6 +250,7 @@ impl Host {
             shim_shmem_lock: RefCell::new(None),
             abstract_unix_namespace: Arc::new(AtomicRefCell::new(AbstractUnixNamespace::new())),
             cpu,
+            cpu_time_available: Cell::new(EmulatedTime::SIMULATION_START),
             localhost: RefCell::new(None),
             internet: RefCell::new(None),
             data_dir_path,
@@ -1307,6 +1315,21 @@ mod export {
         let host = unsafe { host.as_ref().unwrap() };
         let delay = Duration::from_nanos(delay_nanos);
         host.cpu.borrow_mut().as_mut().unwrap().add_delay(delay);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn host_getCpuTimeAvailable(host: *const Host) -> CEmulatedTime {
+        let host = unsafe { host.as_ref().unwrap() };
+        EmulatedTime::to_c_emutime(Some(host.cpu_time_available.get()))
+    }
+
+    #[no_mangle]
+    pub extern "C" fn host_setCpuTimeAvailable(host: *const Host, new_time: CEmulatedTime) {
+        let host = unsafe { host.as_ref().unwrap() };
+        let old_time = host.cpu_time_available.get();
+        let new_time = EmulatedTime::from_c_emutime(new_time).unwrap();
+        assert!(new_time >= old_time);
+        host.cpu_time_available.set(new_time);
     }
 
     #[no_mangle]
