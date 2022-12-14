@@ -2,6 +2,7 @@ use std::mem::MaybeUninit;
 
 use crate::cshadow as c;
 use crate::host::context::ThreadContext;
+use crate::host::descriptor::socket::netlink::{NetlinkFamily, NetlinkSocket, NetlinkSocketType};
 use crate::host::descriptor::socket::unix::{UnixSocket, UnixSocketType};
 use crate::host::descriptor::socket::Socket;
 use crate::host::descriptor::{
@@ -35,7 +36,7 @@ impl SyscallHandler {
         let socket_type = socket_type & !flags;
 
         // if it's not a unix socket, use the C syscall handler instead
-        if domain != libc::AF_UNIX {
+        if domain != libc::AF_UNIX && domain != libc::AF_NETLINK {
             return unsafe {
                 c::syscallhandler_socket(
                     ctx.thread.csyscallhandler(),
@@ -80,7 +81,28 @@ impl SyscallHandler {
                     socket_type,
                     ctx.host.abstract_unix_namespace(),
                 ))
-            }
+            },
+            libc::AF_NETLINK => {
+                let socket_type = match NetlinkSocketType::try_from(socket_type) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        warn!("{}", e);
+                        return Err(Errno::EPROTONOSUPPORT.into());
+                    }
+                };
+                let family = match NetlinkFamily::try_from(protocol) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        warn!("{}", e);
+                        return Err(Errno::EPROTONOSUPPORT.into());
+                    }
+                };
+                Socket::Netlink(NetlinkSocket::new(
+                    file_flags,
+                    socket_type,
+                    family,
+                ))
+            },
             _ => return Err(Errno::EAFNOSUPPORT.into()),
         };
 
