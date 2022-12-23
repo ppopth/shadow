@@ -76,7 +76,7 @@ impl TokenBucket {
     /// was not in use. No refills will occur if called multiple times within
     /// the same refill interval. Returns the duration to the next refill event.
     fn lazy_refill(&mut self, now: &EmulatedTime) -> SimulationTime {
-        let mut span = now.duration_since(&self.last_refill);
+        let mut span = now.saturating_duration_since(&self.last_refill);
 
         if span >= self.refill_interval {
             // Apply refills for the scheduled refill events that have passed.
@@ -104,7 +104,7 @@ impl TokenBucket {
         }
 
         debug_assert!(span < self.refill_interval);
-        self.refill_interval - span
+        self.last_refill + self.refill_interval - *now
     }
 }
 

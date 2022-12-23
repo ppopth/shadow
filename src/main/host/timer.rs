@@ -170,6 +170,11 @@ impl Timer {
 
     pub fn arm(&mut self, host: &Host, expire_time: EmulatedTime, expire_interval: SimulationTime) {
         self.magic.debug_check();
+        let expire_time = if expire_time < Worker::current_time().unwrap() {
+            Worker::current_time().unwrap()
+        } else {
+            expire_time
+        };
         debug_assert!(expire_time >= Worker::current_time().unwrap());
 
         let mut internal = self.internal.borrow_mut();

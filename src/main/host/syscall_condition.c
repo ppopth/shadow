@@ -261,7 +261,9 @@ static void _syscallcondition_logListeningState(SysCallCondition* cond,
     }
 
     if (cond->timeoutExpiration != EMUTIME_INVALID) {
-        utility_debugAssert(cond->timeoutExpiration >= worker_getCurrentEmulatedTime());
+        // There is no need to check the timeout with the current time because the task
+        // can be rescheduled which will make the assertation false.
+        // utility_debugAssert(cond->timeoutExpiration >= worker_getCurrentEmulatedTime());
         CSimulationTime remainingTime = cond->timeoutExpiration - worker_getCurrentEmulatedTime();
         g_string_append_printf(string, "a timeout with %llu.%09llu seconds remaining",
                                remainingTime / SIMTIME_ONE_SECOND,
@@ -308,7 +310,7 @@ static bool _syscallcondition_statusIsValid(SysCallCondition* cond) {
 
 static bool _syscallcondition_satisfied(SysCallCondition* cond, const Host* host) {
     if (cond->timeoutExpiration != EMUTIME_INVALID &&
-        cond->timeoutExpiration >= worker_getCurrentEmulatedTime()) {
+        cond->timeoutExpiration <= worker_getCurrentEmulatedTime()) {
         // Timed out.
         return true;
     }
