@@ -51,6 +51,7 @@ struct _Thread {
 
 Thread* thread_new(const Host* host, Process* process, int threadID) {
     Thread* thread = g_new(Thread, 1);
+    debug("creating thread %d in process '%s'", threadID, process_getName(process));
     *thread = (Thread){.referenceCount = 1,
                        .hostId = host_getID(host),
                        .process = process,
@@ -86,6 +87,7 @@ void thread_unref(Thread* thread) {
     (thread->referenceCount)--;
     utility_debugAssert(thread->referenceCount >= 0);
     if(thread->referenceCount == 0) {
+        debug("deleting thread %d in process '%s'", thread_getID(thread), process_getName(thread->process));
         _thread_cleanupSysCallCondition(thread);
         managedthread_free(thread->mthread);
         if (thread->process) {

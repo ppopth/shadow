@@ -686,7 +686,7 @@ void process_continue(Process* proc, Thread* thread) {
     }
 
     debug(
-        "switching to thread controller to continue executing process '%s'", process_getName(proc));
+        "switching to thread controller to continue executing thread %d in process '%s'", thread_getID(thread), process_getName(proc));
 
     worker_setActiveProcess(proc);
     worker_setActiveThread(thread);
@@ -708,7 +708,7 @@ void process_continue(Process* proc, Thread* thread) {
     _process_handleTimerResult(proc, elapsed);
     info("process '%s' ran for %f seconds", process_getName(proc), elapsed);
 #else
-    debug("process '%s' done continuing", process_getName(proc));
+    debug("thread %d in process '%s' done continuing", thread_getID(thread), process_getName(proc));
 #endif
 
     if (proc->isExiting) {

@@ -408,6 +408,18 @@ impl<'a> Manager<'a> {
                                     host.unlock_shmem();
                                     host_next_event_time
                                 };
+                                match host_next_event_time {
+                                    Some(next_event_time) => {
+                                        log::debug!(
+                                            "Host {}, next event at {}",
+                                            host.name(),
+                                            (next_event_time - EmulatedTime::SIMULATION_START).as_nanos(),
+                                        );
+                                    },
+                                    None => {
+                                        log::debug!("Host {}, no next event", host.name());
+                                    },
+                                }
                                 *next_event_time = [*next_event_time, host_next_event_time]
                                     .into_iter()
                                     .filter_map(std::convert::identity)
