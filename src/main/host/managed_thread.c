@@ -386,6 +386,7 @@ bool managedthread_isRunning(ManagedThread* mthread) { return mthread->isRunning
 pid_t managedthread_clone(ManagedThread* child, ManagedThread* parent, unsigned long flags,
                           PluginPtr child_stack, PluginPtr ptid, PluginPtr ctid,
                           unsigned long newtls) {
+    debug("starting managedthread_clone tid %d", thread_getID(child->base));
     child->ipc_blk = shmemallocator_globalAlloc(ipcData_nbytes());
     utility_debugAssert(child->ipc_blk.p);
     child->ipc_data = child->ipc_blk.p;
@@ -393,6 +394,8 @@ pid_t managedthread_clone(ManagedThread* child, ManagedThread* parent, unsigned 
     childpidwatcher_watch(
         worker_getChildPidWatcher(), parent->nativePid, _markPluginExited, child->ipc_data);
     ShMemBlockSerialized ipc_blk_serial = shmemallocator_globalBlockSerialize(&child->ipc_blk);
+
+    debug("sending IPC block tid %d", thread_getID(child->base));
 
     // Send an IPC block for the new mthread to use.
     _managedthread_continuePlugin(parent, &(ShimEvent){.event_id = SHD_SHIM_EVENT_ADD_THREAD_REQ,
@@ -402,15 +405,16 @@ pid_t managedthread_clone(ManagedThread* child, ManagedThread* parent, unsigned 
     ShimEvent response = {0};
     _managedthread_waitForNextEvent(parent, &response);
     utility_debugAssert(response.event_id == SHD_SHIM_EVENT_ADD_THREAD_PARENT_RES);
+    debug("sent IPC block tid %d", thread_getID(child->base));
 
     // Create the new managed thread.
     pid_t childNativeTid =
         thread_nativeSyscall(parent->base, SYS_clone, flags, child_stack, ptid, ctid, newtls);
     if (childNativeTid < 0) {
-        trace("native clone failed %d(%s)", childNativeTid, strerror(-childNativeTid));
+        debug("native clone failed %d(%s)", childNativeTid, strerror(-childNativeTid));
         return childNativeTid;
     }
-    trace("native clone created tid %d", childNativeTid);
+    debug("native clone created tid %d native tid %d", thread_getID(child->base), childNativeTid);
     child->nativePid = parent->nativePid;
     child->nativeTid = childNativeTid;
 

@@ -60,10 +60,13 @@ Thread* thread_new(const Host* host, Process* process, int threadID) {
                        MAGIC_INITIALIZER};
     process_ref(process);
 
+    debug("starting syscallhandler_new %d in process '%s'", threadID, process_getName(process));
     thread->sys = syscallhandler_new(host, process, thread);
+    debug("starting managedthread_new %d in process '%s'", threadID, process_getName(process));
     thread->mthread = managedthread_new(thread);
 
     shimshmemthread_init(thread_sharedMem(thread), host_getShimShmemLock(host));
+    debug("created thread %d in process '%s'", threadID, process_getName(process));
 
     return thread;
 }

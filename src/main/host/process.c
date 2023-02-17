@@ -654,6 +654,7 @@ static void _unref_thread_cb(gpointer data) {
 
 void process_addThread(Process* proc, Thread* thread) {
     MAGIC_ASSERT(proc);
+    debug("adding thread %d to process '%s'", thread_getID(thread), process_getName(proc));
     g_hash_table_insert(proc->threads, GUINT_TO_POINTER(thread_getID(thread)), thread);
 
     // Schedule thread to start.

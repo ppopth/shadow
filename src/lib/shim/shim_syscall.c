@@ -187,6 +187,10 @@ static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
                 // Make the requested syscall ourselves and return the result
                 // to Shadow.
                 const SysCallReg* regs = res.event_data.syscall.syscall_args.args;
+                long n = syscall_event->event_data.syscall.syscall_args.number;
+                if (n == SYS_clone) {
+                    debug("Handling clone");
+                }
                 long syscall_rv = shim_native_syscall(
                     res.event_data.syscall.syscall_args.number, regs[0].as_u64, regs[1].as_u64,
                     regs[2].as_u64, regs[3].as_u64, regs[4].as_u64, regs[5].as_u64);
@@ -194,6 +198,9 @@ static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
                     .event_id = SHD_SHIM_EVENT_SYSCALL_COMPLETE,
                     .event_data.syscall_complete.retval.as_i64 = syscall_rv,
                 };
+                if (n == SYS_clone) {
+                    debug("Handled clone");
+                }
                 shimevent_sendEventToShadow(ipc, &syscall_complete_event);
                 break;
             }
