@@ -282,10 +282,11 @@ long shim_syscallv(long n, va_list args) {
               n);
         rv = shim_emulated_syscallv(n, args);
     } else {
-        // The syscall is made directly; ptrace or seccomp will get the syscall signal.
-        debug("Making syscall %ld directly; we expect ptrace or seccomp will interpose it, or it "
-              "will be handled natively by the kernel.",
-              n);
+        if (n != SYS_gettid) {
+            // The syscall is made directly; ptrace or seccomp will get the syscall signal.
+            debug("Making syscall %ld directly; we expect ptrace or seccomp will interpose it, or it "
+                  "will be handled natively by the kernel. (tid=%d)", n, gettid());
+        }
         rv = shim_native_syscallv(n, args);
     }
 

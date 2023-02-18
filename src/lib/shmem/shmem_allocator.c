@@ -500,7 +500,7 @@ ShMemBlock shmemserializer_blockDeserialize(ShMemSerializer* serializer,
             return ret;
         }
 
-        debug("inside shmemserializer_blockDeserialize, before calloc");
+        debug("inside shmemserializer_blockDeserialize, tid=%d before calloc", gettid());
         // we are missing that node, so let's map it in.
         ShMemFileNode* new_node = calloc(1, sizeof(ShMemFileNode));
         debug("inside shmemserializer_blockDeserialize, after calloc");
