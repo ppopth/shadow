@@ -480,30 +480,39 @@ ShMemBlock shmemserializer_blockDeserialize(ShMemSerializer* serializer,
 
     const ShMemFileNode* node = NULL;
 
+    debug("inside shmemserializer_blockDeserialize, before pthread_mutex_lock");
     pthread_mutex_lock(&serializer->mtx);
+    debug("inside shmemserializer_blockDeserialize, after pthread_mutex_lock");
 
     node = _shmemfilenode_findName(serializer->nodes, serial->name);
 
     if (!node) {
 
         ShMemFile shmf;
+        debug("inside shmemserializer_blockDeserialize, before shmemfile_map");
         int rc = shmemfile_map(serial->name, serial->nbytes, &shmf);
+        debug("inside shmemserializer_blockDeserialize, after shmemfile_map");
         if (rc != 0) {
             // scary!
+            debug("inside shmemserializer_blockDeserialize, before scary pthread_mutex_unlock");
             pthread_mutex_unlock(&serializer->mtx);
+            debug("inside shmemserializer_blockDeserialize, after scary pthread_mutex_unlock");
             return ret;
         }
 
+        debug("inside shmemserializer_blockDeserialize, before calloc");
         // we are missing that node, so let's map it in.
         ShMemFileNode* new_node = calloc(1, sizeof(ShMemFileNode));
+        debug("inside shmemserializer_blockDeserialize, after calloc");
         new_node->shmf = shmf;
 
         if (serializer->nodes == NULL) {
+            debug("inside shmemserializer_blockDeserialize, serializer->nodes == NULL");
             new_node->prv = new_node;
             new_node->nxt = new_node;
             serializer->nodes = new_node;
         } else { // put it at the end
-
+            debug("inside shmemserializer_blockDeserialize, serializer->nodes != NULL");
             ShMemFileNode* old_head = serializer->nodes;
             old_head->prv->nxt = new_node;
             new_node->prv = old_head->prv;
@@ -514,9 +523,13 @@ ShMemBlock shmemserializer_blockDeserialize(ShMemSerializer* serializer,
         node = new_node;
     }
 
+    debug("inside shmemserializer_blockDeserialize, before _shmemblock_populate");
     _shmemblock_populate(serial, &node->shmf, &ret);
+    debug("inside shmemserializer_blockDeserialize, after _shmemblock_populate");
 
+    debug("inside shmemserializer_blockDeserialize, before pthread_mutex_unlock");
     pthread_mutex_unlock(&serializer->mtx);
+    debug("inside shmemserializer_blockDeserialize, after pthread_mutex_unlock");
     return ret;
 }
 
