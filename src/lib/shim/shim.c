@@ -86,13 +86,17 @@ static struct {
 } _startThread;
 
 void shim_newThreadStart(ShMemBlockSerialized* block) {
+    debug("inside shim_newThreadStart");
     if (shadow_spin_lock(&_startThreadLock)) {
         panic("shadow_spin_lock: %s", strerror(errno));
     };
+    debug("inside shim_newThreadStart, finished shadow_spin_lock");
     if (shadow_sem_init(&_startThread.childInitd, 0, 0)) {
         panic("shadow_sem_init: %s", strerror(errno));
     }
+    debug("inside shim_newThreadStart, finished shadow_sem_init");
     _startThread.childIpcBlk = shmemserializer_globalBlockDeserialize(block);
+    debug("inside shim_newThreadStart, finished shmemserializer_globalBlockDeserialize");
 }
 
 void shim_newThreadChildInitd() {

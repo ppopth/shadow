@@ -217,6 +217,7 @@ static SysCallReg _shim_emulated_syscall_event(const ShimEvent* syscall_event) {
                 shim_shmemNotifyComplete(ipc);
                 break;
             case SHD_SHIM_EVENT_ADD_THREAD_REQ: {
+                debug("received SHD_SHIM_EVENT_ADD_THREAD_REQ");
                 shim_newThreadStart(&res.event_data.add_thread_req.ipc_block);
                 shimevent_sendEventToShadow(
                     ipc, &(ShimEvent){
