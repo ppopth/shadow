@@ -11,7 +11,7 @@
 long shim_syscall(long n, ...);
 
 // Same as `shim_syscall()`, but accepts a variable argument list.
-long shim_syscallv(long n, va_list args);
+long shim_syscallv(long n, va_list args, int is_seccomp);
 
 // Force the native execution of a syscall instruction (using asm so it can't be
 // intercepted).

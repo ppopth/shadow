@@ -265,7 +265,12 @@ long shim_emulated_syscall(long n, ...) {
     return rv;
 }
 
-long shim_syscallv(long n, va_list args) {
+long shim_syscallv(long n, va_list args, int is_seccomp) {
+    if (n != SYS_gettid) {
+        bool oldNativeSyscallFlag = shim_swapAllowNativeSyscalls(true);
+        debug("Syscall %ld called (tid=%d, %s)", n, gettid(), is_seccomp ? "seccomp": "syscall");
+        shim_swapAllowNativeSyscalls(oldNativeSyscallFlag);
+    }
     shim_ensure_init();
 
     long rv;
@@ -296,7 +301,7 @@ long shim_syscallv(long n, va_list args) {
 long shim_syscall(long n, ...) {
     va_list(args);
     va_start(args, n);
-    long rv = shim_syscallv(n, args);
+    long rv = shim_syscallv(n, args, 1);
     va_end(args);
     return rv;
 }
