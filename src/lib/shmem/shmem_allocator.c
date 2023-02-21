@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 
 #include <pthread.h>
 
@@ -443,7 +444,7 @@ void shmemserializer_destroy(ShMemSerializer* serializer) {
             ShMemFileNode* next_node = node->nxt;
             int rc = shmemfile_unmap(&node->shmf);
             assert(rc == 0);
-            free(node);
+            munmap(node, sizeof(ShMemFileNode));
             node = next_node;
         } while (node != serializer->nodes);
     }
@@ -495,7 +496,7 @@ ShMemBlock shmemserializer_blockDeserialize(ShMemSerializer* serializer,
         }
 
         // we are missing that node, so let's map it in.
-        ShMemFileNode* new_node = calloc(1, sizeof(ShMemFileNode));
+        ShMemFileNode* new_node = mmap(NULL, sizeof(ShMemFileNode), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
         new_node->shmf = shmf;
 
         if (serializer->nodes == NULL) {
