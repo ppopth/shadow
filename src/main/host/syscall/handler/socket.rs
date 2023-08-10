@@ -7,6 +7,7 @@ use syscall_logger::log_syscall;
 use crate::cshadow as c;
 use crate::host::descriptor::socket::inet::legacy_tcp::LegacyTcpSocket;
 use crate::host::descriptor::socket::inet::InetSocket;
+use crate::host::descriptor::socket::netlink::{NetlinkFamily, NetlinkSocket, NetlinkSocketType};
 use crate::host::descriptor::socket::unix::{UnixSocket, UnixSocketType};
 use crate::host::descriptor::socket::{RecvmsgArgs, RecvmsgReturn, SendmsgArgs, Socket};
 use crate::host::descriptor::{
@@ -33,8 +34,10 @@ impl SyscallHandler {
         let flags = socket_type & (libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC);
         let socket_type = socket_type & !flags;
 
-        // if it's not a unix socket or tcp socket, use the C syscall handler instead
-        if domain != libc::AF_UNIX && (domain != libc::AF_INET || socket_type != libc::SOCK_STREAM)
+        // if it's not a unix socket, netlink socket, or tcp socket, use
+        // the C syscall handler instead
+        if domain != libc::AF_UNIX && domain != libc::AF_NETLINK
+            && (domain != libc::AF_INET || socket_type != libc::SOCK_STREAM)
         {
             return Self::legacy_syscall(c::syscallhandler_socket, ctx);
         }
@@ -87,6 +90,23 @@ impl SyscallHandler {
                     )))
                 }
                 _ => panic!("Should have called the C syscall handler"),
+            }
+            libc::AF_NETLINK => {
+                let socket_type = match NetlinkSocketType::try_from(socket_type) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        warn!("{}", e);
+                        return Err(Errno::EPROTONOSUPPORT.into());
+                    }
+                };
+                let family = match NetlinkFamily::try_from(protocol) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        warn!("{}", e);
+                        return Err(Errno::EPROTONOSUPPORT.into());
+                    }
+                };
+                Socket::Netlink(NetlinkSocket::new())
             },
             _ => return Err(Errno::EAFNOSUPPORT.into()),
         };
