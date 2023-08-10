@@ -3,6 +3,7 @@ use std::sync::Arc;
 use atomic_refcell::AtomicRefCell;
 use inet::{InetSocket, InetSocketRef, InetSocketRefMut};
 use linux_api::ioctls::IoctlRequest;
+use netlink::NetlinkSocket;
 use nix::sys::socket::Shutdown;
 use shadow_shim_helper_rs::syscall_types::ForeignPtr;
 use unix::UnixSocket;
@@ -21,6 +22,7 @@ use crate::utility::HostTreePointer;
 
 pub mod abstract_unix_ns;
 pub mod inet;
+pub mod netlink;
 pub mod unix;
 
 bitflags::bitflags! {
@@ -37,6 +39,7 @@ bitflags::bitflags! {
 pub enum Socket {
     Unix(Arc<AtomicRefCell<UnixSocket>>),
     Inet(InetSocket),
+    Netlink(Arc<AtomicRefCell<NetlinkSocket>>),
 }
 
 impl Socket {
@@ -44,6 +47,7 @@ impl Socket {
         match self {
             Self::Unix(ref f) => SocketRef::Unix(f.borrow()),
             Self::Inet(ref f) => SocketRef::Inet(f.borrow()),
+            Self::Netlink(_) => todo!(),
         }
     }
 
@@ -51,6 +55,7 @@ impl Socket {
         Ok(match self {
             Self::Unix(ref f) => SocketRef::Unix(f.try_borrow()?),
             Self::Inet(ref f) => SocketRef::Inet(f.try_borrow()?),
+            Self::Netlink(_) => todo!(),
         })
     }
 
@@ -58,6 +63,7 @@ impl Socket {
         match self {
             Self::Unix(ref f) => SocketRefMut::Unix(f.borrow_mut()),
             Self::Inet(ref f) => SocketRefMut::Inet(f.borrow_mut()),
+            Self::Netlink(_) => todo!(),
         }
     }
 
@@ -65,6 +71,7 @@ impl Socket {
         Ok(match self {
             Self::Unix(ref f) => SocketRefMut::Unix(f.try_borrow_mut()?),
             Self::Inet(ref f) => SocketRefMut::Inet(f.try_borrow_mut()?),
+            Self::Netlink(_) => todo!(),
         })
     }
 
@@ -72,6 +79,7 @@ impl Socket {
         match self {
             Self::Unix(f) => Arc::as_ptr(f) as usize,
             Self::Inet(ref f) => f.canonical_handle(),
+            Self::Netlink(_) => todo!(),
         }
     }
 
@@ -84,6 +92,7 @@ impl Socket {
         match self {
             Self::Unix(socket) => UnixSocket::bind(socket, addr, net_ns, rng),
             Self::Inet(socket) => InetSocket::bind(socket, addr, net_ns, rng),
+            Self::Netlink(_) => todo!(),
         }
     }
 
@@ -97,6 +106,7 @@ impl Socket {
         match self {
             Self::Unix(socket) => UnixSocket::listen(socket, backlog, net_ns, rng, cb_queue),
             Self::Inet(socket) => InetSocket::listen(socket, backlog, net_ns, rng, cb_queue),
+            Self::Netlink(_) => todo!(),
         }
     }
 
@@ -110,6 +120,7 @@ impl Socket {
         match self {
             Self::Unix(socket) => UnixSocket::connect(socket, addr, net_ns, rng, cb_queue),
             Self::Inet(socket) => InetSocket::connect(socket, addr, net_ns, rng, cb_queue),
+            Self::Netlink(_) => todo!(),
         }
     }
 
@@ -128,6 +139,9 @@ impl Socket {
             Self::Inet(socket) => {
                 InetSocket::sendmsg(socket, args, memory_manager, net_ns, rng, cb_queue)
             }
+            Self::Netlink(_) => {
+                todo!()
+            }
         }
     }
 
@@ -140,6 +154,7 @@ impl Socket {
         match self {
             Self::Unix(socket) => UnixSocket::recvmsg(socket, args, memory_manager, cb_queue),
             Self::Inet(socket) => InetSocket::recvmsg(socket, args, memory_manager, cb_queue),
+            Self::Netlink(_) => todo!(),
         }
     }
 }
@@ -149,6 +164,7 @@ impl std::fmt::Debug for Socket {
         match self {
             Self::Unix(_) => write!(f, "Unix")?,
             Self::Inet(_) => write!(f, "Inet")?,
+            Self::Netlink(_) => todo!(),
         }
 
         if let Ok(file) = self.try_borrow() {
