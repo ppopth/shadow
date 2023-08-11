@@ -22,6 +22,7 @@ union Addr {
     inet: libc::sockaddr_in,
     inet6: libc::sockaddr_in6,
     unix: libc::sockaddr_un,
+    netlink: libc::sockaddr_nl,
 }
 
 // verify there are no larger fields larger than `libc::sockaddr_storage`
@@ -160,6 +161,34 @@ impl SockaddrStorage {
         let (ptr, len) = addr.as_ptr();
 
         unsafe { Self::from_ptr(ptr as *const MaybeUninit<u8>, len) }.unwrap()
+    }
+
+    /// If the socket address represents a valid netlink socket address (correct family and length),
+    /// returns the netlink socket address.
+    pub fn as_netlink(&self) -> Option<&nix::sys::socket::NetlinkAddr> {
+        if (self.len as usize) < std::mem::size_of::<libc::sockaddr_nl>() {
+            return None;
+        }
+        if self.family() != Some(AddressFamily::Netlink) {
+            return None;
+        }
+
+        // SAFETY: Assume that `nix::sys::socket::NetlinkAddr` is a transparent wrapper around a
+        // `libc::sockaddr_nl`. Verify (as best we can) that this is true.
+        assert_eq_size!(libc::sockaddr_nl, nix::sys::socket::NetlinkAddr);
+        assert_eq_align!(libc::sockaddr_nl, nix::sys::socket::NetlinkAddr);
+
+        Some(unsafe { &*(&self.addr.netlink as *const _ as *const nix::sys::socket::NetlinkAddr) })
+    }
+
+    /// Get a new `SockaddrStorage` with a copy of the netlink socket address.
+    pub fn from_netlink(addr: &nix::sys::socket::NetlinkAddr) -> Self {
+        // SAFETY: Assume that `nix::sys::socket::NetlinkAddr` is a transparent wrapper around a
+        // `libc::sockaddr_nl`. Verify (as best we can) that this is true.
+        assert_eq_size!(libc::sockaddr_nl, nix::sys::socket::NetlinkAddr);
+        assert_eq_align!(libc::sockaddr_nl, nix::sys::socket::NetlinkAddr);
+
+        unsafe { Self::from_ptr(addr.as_ptr() as *const MaybeUninit<u8>, addr.len()) }.unwrap()
     }
 
     /// A pointer to the socket address. Some bytes may be uninitialized.
