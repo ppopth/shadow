@@ -139,8 +139,8 @@ impl Socket {
             Self::Inet(socket) => {
                 InetSocket::sendmsg(socket, args, memory_manager, net_ns, rng, cb_queue)
             }
-            Self::Netlink(_) => {
-                todo!()
+            Self::Netlink(socket) => {
+                NetlinkSocket::sendmsg(socket, args, memory_manager, net_ns, rng, cb_queue)
             }
         }
     }
