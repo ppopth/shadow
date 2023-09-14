@@ -1,20 +1,28 @@
-use std::io::Read;
+use std::io::{Cursor, Read, Write};
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Weak};
 
 use atomic_refcell::AtomicRefCell;
+use neli::{FromBytes, ToBytes};
+use neli::consts::rtnl::{Ifa, IfaF, IfaFFlags, RtAddrFamily, Rtm, RtScope};
+use neli::consts::nl::{NlmF, NlmFFlags, Nlmsg};
+use neli::nl::{Nlmsghdr, NlPayload};
+use neli::rtnl::{Ifaddrmsg, Rtattr};
+use neli::types::{Buffer, RtBuffer};
 use nix::errno::Errno;
-use nix::sys::socket::{MsgFlags, Shutdown};
+use nix::sys::socket::{MsgFlags, NetlinkAddr, Shutdown};
 use shadow_shim_helper_rs::syscall_types::ForeignPtr;
 
+use crate::core::worker::Worker;
 use crate::cshadow as c;
 use crate::host::descriptor::shared_buf::SharedBuf;
-use crate::host::descriptor::socket::{SendmsgArgs, Socket};
+use crate::host::descriptor::socket::{RecvmsgArgs, RecvmsgReturn, SendmsgArgs, Socket};
 use crate::host::descriptor::{
     File, FileMode, FileState, FileStatus, StateEventSource, StateListenerFilter,
     SyscallResult,
 };
 use crate::host::memory_manager::MemoryManager;
-use crate::host::syscall::io::{IoVec, IoVecReader};
+use crate::host::syscall::io::{IoVec, IoVecReader, IoVecWriter};
 use crate::host::syscall_types::SyscallError;
 use crate::network::net_namespace::NetworkNamespace;
 use crate::utility::callback_queue::{CallbackQueue, Handle};
@@ -179,6 +187,18 @@ impl NetlinkSocket {
             .sendmsg(&mut socket_ref.common, socket, args, mem, cb_queue)
     }
 
+    pub fn recvmsg(
+        socket: &Arc<AtomicRefCell<Self>>,
+        args: RecvmsgArgs,
+        mem: &mut MemoryManager,
+        cb_queue: &mut CallbackQueue,
+    ) -> Result<RecvmsgReturn, SyscallError> {
+        let socket_ref = &mut *socket.borrow_mut();
+        socket_ref
+            .protocol_state
+            .recvmsg(&mut socket_ref.common, socket, args, mem, cb_queue)
+    }
+
     pub fn ioctl(
         &mut self,
         request: u64,
@@ -285,6 +305,22 @@ impl ProtocolState {
                 .sendmsg(common, socket, args, mem, cb_queue),
         }
     }
+
+    fn recvmsg(
+        &mut self,
+        common: &mut NetlinkSocketCommon,
+        socket: &Arc<AtomicRefCell<NetlinkSocket>>,
+        args: RecvmsgArgs,
+        mem: &mut MemoryManager,
+        cb_queue: &mut CallbackQueue,
+    ) -> Result<RecvmsgReturn, SyscallError> {
+        match self {
+            Self::Initial(x) => x.as_mut().unwrap()
+                .recvmsg(common, socket, args, mem, cb_queue),
+            Self::Closed(x) => x.as_mut().unwrap()
+                .recvmsg(common, socket, args, mem, cb_queue),
+        }
+    }
 }
 
 impl InitialState {
@@ -380,6 +416,192 @@ impl InitialState {
 
         Ok(rv.try_into().unwrap())
     }
+
+    fn recvmsg(
+        &mut self,
+        common: &mut NetlinkSocketCommon,
+        socket: &Arc<AtomicRefCell<NetlinkSocket>>,
+        args: RecvmsgArgs,
+        mem: &mut MemoryManager,
+        cb_queue: &mut CallbackQueue,
+    ) -> Result<RecvmsgReturn, SyscallError> {
+        if !args.control_ptr.ptr().is_null() {
+            log::debug!("Netlink sockets don't yet support control data for recvmsg()");
+            return Err(Errno::EINVAL.into());
+        }
+
+        let mut packet_buffer = Vec::new();
+        let (_rv, _num_removed_from_buf) =
+            common.recvmsg(socket, &mut packet_buffer, args.flags, mem, cb_queue)?;
+        self.refresh_file_state(common, cb_queue);
+
+        let mut writer = IoVecWriter::new(args.iovs, mem);
+
+        // We set the source address as the netlink address of the kernel
+        let src_addr = SockaddrStorage::from_netlink(&NetlinkAddr::new(0, 0));
+
+        // This closure generates the error message and its RecvmsgReturn
+        let get_errmsg = |seq: Option<u32>| {
+            let errmsg = {
+                let len = None;
+                let nl_type = Nlmsg::Error;
+                let flags = NlmFFlags::empty();
+                let pid = None;
+                let payload = NlPayload::<Nlmsg, ()>::Empty;
+                Nlmsghdr::new(len, nl_type, flags, seq, pid, payload)
+            };
+
+            let errmsg_buffer = {
+                let mut errmsg_buffer = Cursor::new(Vec::new());
+                errmsg.to_bytes(&mut errmsg_buffer).unwrap();
+                errmsg_buffer.into_inner()
+            };
+
+            let ret = RecvmsgReturn {
+                return_val: errmsg_buffer.len().try_into().unwrap(),
+                addr: Some(src_addr),
+                msg_flags: 0,
+                control_len: 0,
+            };
+
+            (errmsg_buffer, ret)
+        };
+
+        let Ok(nlmsg) = Nlmsghdr::<Rtm, Ifaddrmsg>::from_bytes(&mut Cursor::new(&packet_buffer)) else {
+            log::warn!("Failed to deserialize the netlink packet");
+            // Since we don't know the sequence number yet, we don't put it here
+            let (errmsg_buffer, ret) = get_errmsg(None);
+            writer.write(&errmsg_buffer)?;
+            return Ok(ret);
+        };
+
+        // Use the same sequence number as the request
+        let (errmsg_buffer, errmsg_ret) = get_errmsg(Some(nlmsg.nl_seq));
+
+        if nlmsg.nl_type != Rtm::Getaddr {
+            log::warn!("Unsupported message type (only RTM_GETADDR is supported)");
+            writer.write(&errmsg_buffer)?;
+            return Ok(errmsg_ret);
+        }
+
+        // This will never panic because we already checked that the nl_type is RTM_GETADDR
+        let ifaddrmsg = nlmsg.get_payload().unwrap();
+
+        // The only supported interface address family is AF_INET
+        if ifaddrmsg.ifa_family != RtAddrFamily::Unspecified && ifaddrmsg.ifa_family != RtAddrFamily::Inet {
+            log::warn!("Unsupported ifa_family (only AF_UNSPEC and AF_INET are supported)");
+            writer.write(&errmsg_buffer)?;
+            return Ok(errmsg_ret);
+        }
+
+        // The rest of the fields are unsupported. We limit only the interest to the zero values
+        if ifaddrmsg.ifa_prefixlen != 0 || ifaddrmsg.ifa_flags != IfaFFlags::empty()
+            || ifaddrmsg.ifa_index != 0 || ifaddrmsg.ifa_scope != libc::c_uchar::from(RtScope::Universe) {
+            log::warn!("Unsupported ifa_prefixlen, ifa_flags, ifa_scope, or ifa_index (they have to be 0)");
+            writer.write(&errmsg_buffer)?;
+            return Ok(errmsg_ret);
+        }
+
+        // The struct used to describe the network interface
+        struct Interface {
+            address: Ipv4Addr,
+            label: String,
+            prefix_len: u8,
+            scope: RtScope,
+            index: libc::c_int,
+        }
+
+        // Get the IP address of the host
+        let default_ip = Worker::with_active_host(|host| host.default_ip()).unwrap();
+        // List of both interfaces of the host
+        let interfaces = [
+            // All the configurations are the same as in the syscall of getifaddrs
+            Interface {
+                address: Ipv4Addr::LOCALHOST,
+                label: String::from("lo"),
+                prefix_len: 8,
+                scope: RtScope::Host,
+                index: 1,
+            },
+            Interface {
+                address: default_ip,
+                label: String::from("eth0"),
+                prefix_len: 24,
+                scope: RtScope::Universe,
+                index: 2,
+            },
+        ];
+
+        let mut buffer = Cursor::new(Vec::new());
+        // Send the interface addresses
+        for interface in interfaces {
+            let address = interface.address.octets();
+            let broadcast = if interface.prefix_len == 32 {
+                address
+            } else {
+                Ipv4Addr::from(
+                    (0xffff_ffff_u32) >> u32::from(interface.prefix_len) | u32::from(interface.address),
+                )
+                .octets()
+            };
+            let mut label = Vec::from(interface.label.as_bytes());
+            label.push(0); // Null-terminate
+            // List of attribtes sent with the response for the current interface
+            let attrs = [
+                // I don't know the difference between IFA_ADDRESS and IFA_LOCAL. However, Linux
+                // provides the same address for both attributes, so I do the same.
+                // Run `strace ip addr` to see.
+                Rtattr::new(None, Ifa::Address, Buffer::from(&address[..])).unwrap(),
+                Rtattr::new(None, Ifa::Local, Buffer::from(&address[..])).unwrap(),
+                Rtattr::new(None, Ifa::Broadcast, Buffer::from(&broadcast[..])).unwrap(),
+                Rtattr::new(None, Ifa::Label, Buffer::from(label)).unwrap(),
+            ];
+            let ifaddrmsg = Ifaddrmsg {
+                ifa_family: RtAddrFamily::Inet,
+                ifa_prefixlen: interface.prefix_len,
+                // IFA_F_PERMANENT is used to indicate that the address is permanent
+                ifa_flags: IfaFFlags::new(&[IfaF::Permanent]),
+                ifa_scope: libc::c_uchar::from(interface.scope),
+                ifa_index: interface.index,
+                rtattrs: RtBuffer::from_iter(attrs),
+            };
+            let nlmsg = {
+                let len = None;
+                let nl_type = Rtm::Newaddr;
+                // The NLM_F_MULTI flag is used to indicate that we will send multiple messages
+                let flags = NlmFFlags::new(&[NlmF::Multi]);
+                // Use the same sequence number as the request
+                let seq = Some(nlmsg.nl_seq);
+                let pid = None;
+                let payload = NlPayload::Payload(ifaddrmsg);
+                Nlmsghdr::new(len, nl_type, flags, seq, pid, payload)
+            };
+            nlmsg.to_bytes(&mut buffer).unwrap();
+        }
+        // After sending the messages with the NLM_F_MULTI flag set, we need to send the NLMSG_DONE message
+        let done_msg = {
+            let len = None;
+            let nl_type = Nlmsg::Done;
+            let flags = NlmFFlags::new(&[NlmF::Multi]);
+            // Use the same sequence number as the request
+            let seq = Some(nlmsg.nl_seq);
+            let pid = None;
+            // Linux also emits 4 bytes of zeroes after the header. See `strace ip addr`
+            let payload: NlPayload<Nlmsg, u32> = NlPayload::Payload(0);
+            Nlmsghdr::new(len, nl_type, flags, seq, pid, payload)
+        };
+        done_msg.to_bytes(&mut buffer).unwrap();
+
+        let buffer = buffer.into_inner();
+        writer.write(&buffer)?;
+
+        Ok(RecvmsgReturn {
+            return_val: buffer.len().try_into().unwrap(),
+            addr: Some(src_addr),
+            msg_flags: 0,
+            control_len: 0,
+        })
+    }
 }
 
 impl ClosedState {
@@ -405,6 +627,19 @@ impl ClosedState {
     ) -> Result<libc::ssize_t, SyscallError> {
         // We follow the same approach as UnixSocket
         log::warn!("sendmsg() while in state {}", std::any::type_name::<Self>());
+        Err(Errno::EOPNOTSUPP.into())
+    }
+
+    fn recvmsg(
+        &mut self,
+        _common: &mut NetlinkSocketCommon,
+        _socket: &Arc<AtomicRefCell<NetlinkSocket>>,
+        _args: RecvmsgArgs,
+        _mem: &mut MemoryManager,
+        _cb_queue: &mut CallbackQueue,
+    ) -> Result<RecvmsgReturn, SyscallError> {
+        // We follow the same approach as UnixSocket
+        log::warn!("recvmsg() while in state {}", std::any::type_name::<Self>());
         Err(Errno::EOPNOTSUPP.into())
     }
 }
@@ -503,6 +738,66 @@ impl NetlinkSocketCommon {
             return Err(SyscallError::new_blocked(
                 File::Socket(Socket::Netlink(socket.clone())),
                 FileState::WRITABLE,
+                self.supports_sa_restart(),
+            ));
+        }
+
+        Ok(result?)
+    }
+
+    pub fn recvmsg<W: Write>(
+        &mut self,
+        socket: &Arc<AtomicRefCell<NetlinkSocket>>,
+        dst: W,
+        flags: libc::c_int,
+        _mem: &mut MemoryManager,
+        cb_queue: &mut CallbackQueue,
+    ) -> Result<(usize, usize), SyscallError> {
+        let supported_flags = MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_TRUNC;
+
+        // if there's a flag we don't support, it's probably best to raise an error rather than do
+        // the wrong thing
+        let Some(mut flags) = MsgFlags::from_bits(flags) else {
+            log::warn!("Unrecognized recv flags: {:#b}", flags);
+            return Err(Errno::EINVAL.into());
+        };
+        if flags.intersects(!supported_flags) {
+            log::warn!("Unsupported recv flags: {:?}", flags);
+            return Err(Errno::EINVAL.into());
+        }
+
+        if self.status.contains(FileStatus::NONBLOCK) {
+            flags.insert(MsgFlags::MSG_DONTWAIT);
+        }
+
+        // run in a closure so that an early return doesn't return from the syscall handler
+        let result = (|| {
+            let mut buffer = self.buffer.borrow_mut();
+
+            // the read would block if the buffer has no data
+            if !buffer.has_data() {
+                return Err(Errno::EWOULDBLOCK);
+            }
+
+            let (num_copied, num_removed_from_buf) = buffer
+                .read(dst, cb_queue)
+                .map_err(|e| e.try_into().unwrap())?;
+
+            if flags.contains(MsgFlags::MSG_TRUNC) {
+                // return the total size of the message, not the number of bytes we read
+                Ok((num_removed_from_buf, num_removed_from_buf))
+            } else {
+                Ok((num_copied, num_removed_from_buf))
+            }
+        })();
+
+        // if the syscall would block and we don't have the MSG_DONTWAIT flag
+        if result.as_ref().err() == Some(&Errno::EWOULDBLOCK)
+            && !flags.contains(MsgFlags::MSG_DONTWAIT)
+        {
+            return Err(SyscallError::new_blocked(
+                File::Socket(Socket::Netlink(socket.clone())),
+                FileState::READABLE,
                 self.supports_sa_restart(),
             ));
         }
