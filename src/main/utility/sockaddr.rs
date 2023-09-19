@@ -276,6 +276,12 @@ impl From<nix::sys::socket::SockaddrIn6> for SockaddrStorage {
     }
 }
 
+impl From<nix::sys::socket::NetlinkAddr> for SockaddrStorage {
+    fn from(addr: nix::sys::socket::NetlinkAddr) -> Self {
+        SockaddrStorage::from_netlink(&addr)
+    }
+}
+
 /// A Unix socket address. Typically will be used as an owned address
 /// `SockaddrUnix<libc::sockaddr_un>` or a borrowed address `SockaddrUnix<&libc::sockaddr_un>`, and
 /// you can convert between them using methods such as [`as_ref`](Self::as_ref) or
