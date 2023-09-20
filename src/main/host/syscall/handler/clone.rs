@@ -11,7 +11,7 @@ use syscall_logger::log_syscall;
 
 use crate::host::descriptor::descriptor_table::DescriptorTable;
 use crate::host::process::ProcessId;
-use crate::host::syscall_types::SyscallError;
+use crate::host::syscall_types::{SyscallError, SyscallResult};
 use crate::host::thread::Thread;
 
 use super::{SyscallContext, SyscallHandler};
@@ -271,12 +271,12 @@ impl SyscallHandler {
     // Note that the syscall args are different than the libc wrapper.
     // See "C library/kernel differences" in clone(2).
     #[log_syscall(
-        /* rv */kernel_pid_t,
-        /* flags */i32,
-        /* child_stack */*const std::ffi::c_void,
-        /* ptid */*const kernel_pid_t,
-        /* ctid */*const kernel_pid_t,
-        /* newtls */*const std::ffi::c_void)]
+        /* rv */ kernel_pid_t,
+        /* flags */ i32,
+        /* child_stack */ *const std::ffi::c_void,
+        /* ptid */ *const kernel_pid_t,
+        /* ctid */ *const kernel_pid_t,
+        /* newtls */ *const std::ffi::c_void)]
     pub fn clone(
         ctx: &mut SyscallContext,
         flags_and_exit_signal: i32,
@@ -307,9 +307,9 @@ impl SyscallHandler {
     }
 
     #[log_syscall(
-        /* rv */kernel_pid_t,
-        /* args*/*const std::ffi::c_void,
-        /* args_size*/usize)]
+        /* rv */ kernel_pid_t,
+        /* args*/ *const std::ffi::c_void,
+        /* args_size*/ usize)]
     pub fn clone3(
         ctx: &mut SyscallContext,
         args: ForeignPtr<linux_api::sched::clone_args>,
@@ -346,7 +346,7 @@ impl SyscallHandler {
         )
     }
 
-    #[log_syscall(/* rv */kernel_pid_t)]
+    #[log_syscall(/* rv */ kernel_pid_t)]
     pub fn fork(ctx: &mut SyscallContext) -> Result<kernel_pid_t, SyscallError> {
         // This should be the correct call to `clone_internal`, but `clone_internal`
         // will currently return an error.
@@ -361,7 +361,7 @@ impl SyscallHandler {
         )
     }
 
-    #[log_syscall(/* rv */kernel_pid_t)]
+    #[log_syscall(/* rv */ kernel_pid_t)]
     pub fn vfork(ctx: &mut SyscallContext) -> Result<kernel_pid_t, SyscallError> {
         // This should be the correct call to `clone_internal`, but `clone_internal`
         // will currently return an error.
@@ -376,8 +376,62 @@ impl SyscallHandler {
         )
     }
 
-    #[log_syscall(/* rv */kernel_pid_t)]
+    #[log_syscall(/* rv */ kernel_pid_t)]
     pub fn gettid(ctx: &mut SyscallContext) -> Result<kernel_pid_t, SyscallError> {
         Ok(kernel_pid_t::from(ctx.objs.thread.id()))
+    }
+
+    #[log_syscall(/* rv */ std::ffi::c_int,
+        /* hdrp */ *const std::ffi::c_void,
+        /* datap */ *const std::ffi::c_void)]
+    pub fn capget(
+        ctx: &mut SyscallContext,
+        hdrp: ForeignPtr<linux_raw_sys::general::__user_cap_header_struct>,
+        datap: ForeignPtr<[linux_raw_sys::general::__user_cap_data_struct; 2]>,
+    ) -> SyscallResult {
+        // If the version is not 3, we return the error
+        let hdrp = ctx.objs.process.memory_borrow().read(hdrp)?;
+        if hdrp.version != linux_raw_sys::general::_LINUX_CAPABILITY_VERSION_3 {
+            warn!("The version of Linux capabilities is not supported ({})", hdrp.version);
+            return Err(Errno::EINVAL.into());
+        }
+
+        if !datap.is_null() {
+            // Since we don't provide any capability to the managed plugin, we return zeroes to both
+            // datap[0] and datap[1]
+            let empty = linux_raw_sys::general::__user_cap_data_struct {
+                effective: 0,
+                permitted: 0,
+                inheritable: 0,
+            };
+            ctx.objs.process.memory_borrow_mut().write(datap, &[empty, empty])?;
+        }
+        Ok(0.into())
+    }
+
+    #[log_syscall(/* rv */ std::ffi::c_int,
+        /* hdrp */ *const std::ffi::c_void,
+        /* datap */ *const std::ffi::c_void)]
+    pub fn capset(
+        ctx: &mut SyscallContext,
+        hdrp: ForeignPtr<linux_raw_sys::general::__user_cap_header_struct>,
+        datap: ForeignPtr<[linux_raw_sys::general::__user_cap_data_struct; 2]>,
+    ) -> SyscallResult {
+        // If the version is not 3, we return the error
+        let hdrp = ctx.objs.process.memory_borrow().read(hdrp)?;
+        if hdrp.version != linux_raw_sys::general::_LINUX_CAPABILITY_VERSION_3 {
+            warn!("The version of Linux capabilities is not supported ({})", hdrp.version);
+            return Err(Errno::EINVAL.into());
+        }
+
+        let datap: [_; 2] = ctx.objs.process.memory_borrow().read(datap)?;
+        for data in &datap {
+            // We don't allow the plugin to set any capability
+            if data.effective != 0 || data.permitted != 0 || data.inheritable != 0 {
+                warn!("The version of Linux capabilities is not supported ({})", hdrp.version);
+                return Err(Errno::EINVAL.into());
+            }
+        }
+        Ok(0.into())
     }
 }

@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 libc = { version = "0.2.148", default-features = false }
+linux-raw-sys = "0.5.2"
