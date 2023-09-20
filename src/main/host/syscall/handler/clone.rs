@@ -3,7 +3,7 @@ use nix::errno::Errno;
 use shadow_shim_helper_rs::syscall_types::ForeignPtr;
 use syscall_logger::log_syscall;
 
-use crate::host::syscall_types::SyscallError;
+use crate::host::syscall_types::{SyscallError, SyscallResult};
 
 use super::{SyscallContext, SyscallHandler};
 
@@ -229,12 +229,12 @@ impl SyscallHandler {
     // Note that the syscall args are different than the libc wrapper.
     // See "C library/kernel differences" in clone(2).
     #[log_syscall(
-        /* rv */libc::pid_t,
-        /* flags */i32,
-        /* child_stack */*const libc::c_void,
-        /* ptid */*const libc::pid_t,
-        /* ctid */*const libc::pid_t,
-        /* newtls */*const libc::c_void)]
+        /* rv */ libc::pid_t,
+        /* flags */ i32,
+        /* child_stack */ *const libc::c_void,
+        /* ptid */ *const libc::pid_t,
+        /* ctid */ *const libc::pid_t,
+        /* newtls */ *const libc::c_void)]
     pub fn clone(
         ctx: &mut SyscallContext,
         flags_and_exit_signal: i32,
@@ -247,9 +247,9 @@ impl SyscallHandler {
     }
 
     #[log_syscall(
-        /* rv */libc::pid_t,
-        /* args*/*const libc::c_void,
-        /* args_size*/usize)]
+        /* rv */ libc::pid_t,
+        /* args*/ *const libc::c_void,
+        /* args_size*/ usize)]
     pub fn clone3(
         ctx: &mut SyscallContext,
         args: ForeignPtr<libc::clone_args>,
@@ -301,8 +301,30 @@ impl SyscallHandler {
         )
     }
 
-    #[log_syscall(/* rv */libc::pid_t)]
+    #[log_syscall(/* rv */ libc::pid_t)]
     pub fn gettid(ctx: &mut SyscallContext) -> Result<libc::pid_t, SyscallError> {
         Ok(libc::pid_t::from(ctx.objs.thread.id()))
+    }
+
+    #[log_syscall(/* rv */ libc::c_int,
+        /* hdrp */ *const libc::c_void,
+        /* datap */ *const libc::c_void)]
+    pub fn capget(
+        _ctx: &mut SyscallContext,
+        _hdrp: ForeignPtr<()>,
+        _datap: ForeignPtr<()>,
+    ) -> SyscallResult {
+        Ok(0.into())
+    }
+
+    #[log_syscall(/* rv */ libc::c_int,
+        /* hdrp */ *const libc::c_void,
+        /* datap */ *const libc::c_void)]
+    pub fn capset(
+        _ctx: &mut SyscallContext,
+        _hdrp: ForeignPtr<()>,
+        _datap: ForeignPtr<()>,
+    ) -> SyscallResult {
+        Ok(0.into())
     }
 }
