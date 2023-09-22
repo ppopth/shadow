@@ -6,10 +6,13 @@ use atomic_refcell::AtomicRefCell;
 use linux_api::errno::Errno;
 use linux_api::ioctls::IoctlRequest;
 use neli::{FromBytes, ToBytes};
-use neli::consts::rtnl::{Ifa, IfaF, IfaFFlags, RtAddrFamily, Rtm, RtScope};
+use neli::consts::rtnl::{
+    Arphrd, Ifa, IfaF, IfaFFlags, Iff, IffFlags, Ifla,
+    RtAddrFamily, Rtm, RtScope,
+};
 use neli::consts::nl::{NlmF, NlmFFlags, Nlmsg};
 use neli::nl::{Nlmsghdr, NlPayload};
-use neli::rtnl::{Ifaddrmsg, Rtattr};
+use neli::rtnl::{Ifaddrmsg, Ifinfomsg, Rtattr};
 use neli::types::{Buffer, RtBuffer};
 use nix::sys::socket::{MsgFlags, NetlinkAddr, Shutdown};
 use shadow_shim_helper_rs::syscall_types::ForeignPtr;
@@ -53,6 +56,29 @@ impl NetlinkSocket {
             let buffer = SharedBuf::new(usize::MAX);
             let buffer = Arc::new(AtomicRefCell::new(buffer));
 
+            // Get the IP address of the host
+            let default_ip = Worker::with_active_host(|host| host.default_ip()).unwrap();
+            // All the interface configurations are the same as in the getifaddrs function handler
+            let mut interfaces = Vec::new();
+            interfaces.push(Interface {
+                address: Ipv4Addr::LOCALHOST,
+                label: String::from("lo"),
+                prefix_len: 8,
+                if_type: Arphrd::Loopback,
+                mtu: 65536,
+                scope: RtScope::Host,
+                index: 1,
+            });
+            interfaces.push(Interface {
+                address: default_ip,
+                label: String::from("eth0"),
+                prefix_len: 24,
+                if_type: Arphrd::Ether,
+                mtu: 1500,
+                scope: RtScope::Universe,
+                index: 2,
+            });
+
             let mut common = NetlinkSocketCommon {
                 buffer,
                 send_limit: NETLINK_SOCKET_DEFAULT_BUFFER_SIZE,
@@ -61,6 +87,7 @@ impl NetlinkSocket {
                 state: FileState::ACTIVE,
                 status,
                 has_open_file: false,
+                interfaces,
             };
             let protocol_state = ProtocolState::new(&mut common, weak);
             AtomicRefCell::new(Self {
@@ -551,46 +578,31 @@ impl InitialState {
         // We set the source address as the netlink address of the kernel
         let src_addr = SockaddrStorage::from_netlink(&NetlinkAddr::new(0, 0));
 
-        // This closure generates the error message and its RecvmsgReturn
-        let get_errmsg = |seq: Option<u32>| {
-            let errmsg = {
-                let len = None;
-                let nl_type = Nlmsg::Error;
-                let flags = NlmFFlags::empty();
-                let pid = None;
-                let payload = NlPayload::<Nlmsg, ()>::Empty;
-                Nlmsghdr::new(len, nl_type, flags, seq, pid, payload)
-            };
-
-            let errmsg_buffer = {
-                let mut errmsg_buffer = Cursor::new(Vec::new());
-                errmsg.to_bytes(&mut errmsg_buffer).unwrap();
-                errmsg_buffer.into_inner()
-            };
-
-            let ret = RecvmsgReturn {
-                return_val: errmsg_buffer.len().try_into().unwrap(),
-                addr: Some(src_addr),
-                msg_flags: 0,
-                control_len: 0,
-            };
-
-            (errmsg_buffer, ret)
-        };
-
-        let Ok(nlmsg) = Nlmsghdr::<Rtm, Ifaddrmsg>::from_bytes(&mut Cursor::new(&packet_buffer)) else {
+        if let Ok(nlmsg) = Nlmsghdr::<Rtm, Ifinfomsg>::from_bytes(&mut Cursor::new(&packet_buffer)) {
+            self.handle_ifinfomsg(common, src_addr, nlmsg, writer)
+        } else if let Ok(nlmsg) = Nlmsghdr::<Rtm, Ifaddrmsg>::from_bytes(&mut Cursor::new(&packet_buffer)) {
+            self.handle_ifaddrmsg(common, src_addr, nlmsg, writer)
+        } else {
             log::warn!("Failed to deserialize the netlink packet");
             // Since we don't know the sequence number yet, we don't put it here
-            let (errmsg_buffer, ret) = get_errmsg(None);
+            let (errmsg_buffer, ret) = get_errmsg(src_addr, None);
             writer.write(&errmsg_buffer)?;
-            return Ok(ret);
-        };
+            Ok(ret)
+        }
+    }
 
+    fn handle_ifaddrmsg(
+        &mut self,
+        common: &mut NetlinkSocketCommon,
+        src_addr: SockaddrStorage,
+        nlmsg: Nlmsghdr<Rtm, Ifaddrmsg>,
+        mut writer: impl Write,
+    ) -> Result<RecvmsgReturn, SyscallError> {
         // Use the same sequence number as the request
-        let (errmsg_buffer, errmsg_ret) = get_errmsg(Some(nlmsg.nl_seq));
+        let (errmsg_buffer, errmsg_ret) = get_errmsg(src_addr, Some(nlmsg.nl_seq));
 
         if nlmsg.nl_type != Rtm::Getaddr {
-            log::warn!("Unsupported message type (only RTM_GETADDR is supported)");
+            log::warn!("Unsupported message type (only RTM_GETADDR and RTM_GETLINK are supported)");
             writer.write(&errmsg_buffer)?;
             return Ok(errmsg_ret);
         }
@@ -613,39 +625,9 @@ impl InitialState {
             return Ok(errmsg_ret);
         }
 
-        // The struct used to describe the network interface
-        struct Interface {
-            address: Ipv4Addr,
-            label: String,
-            prefix_len: u8,
-            scope: RtScope,
-            index: libc::c_int,
-        }
-
-        // Get the IP address of the host
-        let default_ip = Worker::with_active_host(|host| host.default_ip()).unwrap();
-        // List of both interfaces of the host
-        let interfaces = [
-            // All the configurations are the same as in the syscall of getifaddrs
-            Interface {
-                address: Ipv4Addr::LOCALHOST,
-                label: String::from("lo"),
-                prefix_len: 8,
-                scope: RtScope::Host,
-                index: 1,
-            },
-            Interface {
-                address: default_ip,
-                label: String::from("eth0"),
-                prefix_len: 24,
-                scope: RtScope::Universe,
-                index: 2,
-            },
-        ];
-
         let mut buffer = Cursor::new(Vec::new());
         // Send the interface addresses
-        for interface in interfaces {
+        for interface in &common.interfaces {
             let address = interface.address.octets();
             let broadcast = if interface.prefix_len == 32 {
                 address
@@ -685,6 +667,110 @@ impl InitialState {
                 let seq = Some(nlmsg.nl_seq);
                 let pid = None;
                 let payload = NlPayload::Payload(ifaddrmsg);
+                Nlmsghdr::new(len, nl_type, flags, seq, pid, payload)
+            };
+            nlmsg.to_bytes(&mut buffer).unwrap();
+        }
+        // After sending the messages with the NLM_F_MULTI flag set, we need to send the NLMSG_DONE message
+        let done_msg = {
+            let len = None;
+            let nl_type = Nlmsg::Done;
+            let flags = NlmFFlags::new(&[NlmF::Multi]);
+            // Use the same sequence number as the request
+            let seq = Some(nlmsg.nl_seq);
+            let pid = None;
+            // Linux also emits 4 bytes of zeroes after the header. See `strace ip addr`
+            let payload: NlPayload<Nlmsg, u32> = NlPayload::Payload(0);
+            Nlmsghdr::new(len, nl_type, flags, seq, pid, payload)
+        };
+        done_msg.to_bytes(&mut buffer).unwrap();
+
+        let buffer = buffer.into_inner();
+        writer.write(&buffer)?;
+
+        Ok(RecvmsgReturn {
+            return_val: buffer.len().try_into().unwrap(),
+            addr: Some(src_addr),
+            msg_flags: 0,
+            control_len: 0,
+        })
+    }
+
+    fn handle_ifinfomsg(
+        &mut self,
+        common: &mut NetlinkSocketCommon,
+        src_addr: SockaddrStorage,
+        nlmsg: Nlmsghdr<Rtm, Ifinfomsg>,
+        mut writer: impl Write,
+    ) -> Result<RecvmsgReturn, SyscallError> {
+        // Use the same sequence number as the request
+        let (errmsg_buffer, errmsg_ret) = get_errmsg(src_addr, Some(nlmsg.nl_seq));
+
+        if nlmsg.nl_type != Rtm::Getlink {
+            log::warn!("Unsupported message type (only RTM_GETADDR and RTM_GETLINK are supported)");
+            writer.write(&errmsg_buffer)?;
+            return Ok(errmsg_ret);
+        }
+
+        // This will never panic because we already checked that the nl_type is RTM_GETLINK
+        let ifinfomsg = nlmsg.get_payload().unwrap();
+
+        // The only supported interface address family is AF_INET
+        if ifinfomsg.ifi_family != RtAddrFamily::Unspecified && ifinfomsg.ifi_family != RtAddrFamily::Inet {
+            log::warn!("Unsupported ifi_family (only AF_UNSPEC and AF_INET are supported)");
+            writer.write(&errmsg_buffer)?;
+            return Ok(errmsg_ret);
+        }
+
+        // The rest of the fields are unsupported. We limit only the interest to the zero values
+        if ifinfomsg.ifi_type != 0.into() || ifinfomsg.ifi_index != 0
+            || ifinfomsg.ifi_flags != IffFlags::empty() {
+            log::warn!("Unsupported ifi_type, ifi_index, or ifi_flags (they have to be 0)");
+            writer.write(&errmsg_buffer)?;
+            return Ok(errmsg_ret);
+        }
+
+        // We don't check for ifi_change because we found that `ip addr` sets it to zero even if
+        // rtnetlink(7) recommends to set it to all 1s
+
+        let mut buffer = Cursor::new(Vec::new());
+        // Send the interface addresses
+        for interface in &common.interfaces {
+            let mut label = Vec::from(interface.label.as_bytes());
+            label.push(0); // Null-terminate
+            // List of attribtes sent with the response for the current interface
+            let attrs = [
+                Rtattr::new(None, Ifla::Ifname, Buffer::from(label)).unwrap(),
+                // Not sure about the value of this one, but I always see 1000 from `ip addr`. If
+                // we don't specify this, `ip addr` will create an AF_INET socket and do ioctl. See
+                // https://git.kernel.org/pub/scm/network/iproute2/iproute2.git/tree/ip/ipaddress.c#n168
+                Rtattr::new(None, Ifla::Txqlen, Buffer::from(&1000u32.to_le_bytes()[..])).unwrap(),
+                Rtattr::new(None, Ifla::Mtu, Buffer::from(&interface.mtu.to_le_bytes()[..])).unwrap(),
+                // TODO: Add the MAC address through IFLA_ADDRESS and IFLA_BROADCAST
+            ];
+            let flags = if interface.if_type == Arphrd::Loopback {
+                IffFlags::new(&[Iff::Up, Iff::Loopback, Iff::Running])
+            } else {
+                // Not sure about the IFF_MULTICAST, but it's also the one I got from `strace ip addr`
+                IffFlags::new(&[Iff::Up, Iff::Broadcast, Iff::Running, Iff::Multicast])
+            };
+            let ifinfomsg = Ifinfomsg::new(
+                RtAddrFamily::Inet,
+                interface.if_type,
+                interface.index,
+                flags,
+                IffFlags::from_bitmask(0xffffffff), // rtnetlink(7) recommends to set it to all 1s
+                RtBuffer::from_iter(attrs),
+            );
+            let nlmsg = {
+                let len = None;
+                let nl_type = Rtm::Newlink;
+                // The NLM_F_MULTI flag is used to indicate that we will send multiple messages
+                let flags = NlmFFlags::new(&[NlmF::Multi]);
+                // Use the same sequence number as the request
+                let seq = Some(nlmsg.nl_seq);
+                let pid = None;
+                let payload = NlPayload::Payload(ifinfomsg);
                 Nlmsghdr::new(len, nl_type, flags, seq, pid, payload)
             };
             nlmsg.to_bytes(&mut buffer).unwrap();
@@ -772,6 +858,17 @@ impl ClosedState {
     }
 }
 
+// The struct used to describe the network interface
+struct Interface {
+    address: Ipv4Addr,
+    label: String,
+    prefix_len: u8,
+    if_type: Arphrd,
+    mtu: u32,
+    scope: RtScope,
+    index: libc::c_int,
+}
+
 /// Common data and functionality that is useful for all states.
 struct NetlinkSocketCommon {
     buffer: Arc<AtomicRefCell<SharedBuf>>,
@@ -785,6 +882,8 @@ struct NetlinkSocketCommon {
     // should only be used by `OpenFile` to make sure there is only ever one `OpenFile` instance for
     // this file
     has_open_file: bool,
+    /// Interfaces
+    interfaces: Vec<Interface>,
 }
 
 impl NetlinkSocketCommon {
@@ -1018,4 +1117,31 @@ impl std::fmt::Display for NetlinkFamilyConversionError {
             self.0
         )
     }
+}
+
+/// This function generates the error message and its RecvmsgReturn
+fn get_errmsg(src_addr: SockaddrStorage, seq: Option<u32>) -> (Vec<u8>, RecvmsgReturn) {
+    let errmsg = {
+        let len = None;
+        let nl_type = Nlmsg::Error;
+        let flags = NlmFFlags::empty();
+        let pid = None;
+        let payload = NlPayload::<Nlmsg, ()>::Empty;
+        Nlmsghdr::new(len, nl_type, flags, seq, pid, payload)
+    };
+
+    let errmsg_buffer = {
+        let mut errmsg_buffer = Cursor::new(Vec::new());
+        errmsg.to_bytes(&mut errmsg_buffer).unwrap();
+        errmsg_buffer.into_inner()
+    };
+
+    let ret = RecvmsgReturn {
+        return_val: errmsg_buffer.len().try_into().unwrap(),
+        addr: Some(src_addr),
+        msg_flags: 0,
+        control_len: 0,
+    };
+
+    (errmsg_buffer, ret)
 }
