@@ -1031,7 +1031,7 @@ impl LegacyTcpSocket {
     }
 
     pub fn setsockopt(
-        &self,
+        &mut self,
         level: libc::c_int,
         optname: libc::c_int,
         optval_ptr: ForeignPtr<()>,
