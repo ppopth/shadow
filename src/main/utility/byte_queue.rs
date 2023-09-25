@@ -282,6 +282,46 @@ impl ByteQueue {
         Ok((total_copied, packet_len))
     }
 
+    // TODO: This method is supposed to be private just like pop_packet, but, since we don't have
+    // peek_stream yet, we make this method public
+    pub fn peek_packet<W: Write>(&self, mut dst: W) -> std::io::Result<(usize, usize)> {
+        let chunk = self
+            .bytes
+            .front()
+            .expect("This function assumes there is a chunk");
+        assert_eq!(chunk.chunk_type, ChunkType::Packet);
+        let mut bytes = chunk.data.as_ref();
+        let mut total_copied = 0;
+
+        let packet_len = bytes.len();
+
+        loop {
+            let copied = match dst.write(bytes) {
+                Ok(x) => x,
+                // may have been interrupted due to a signal, so try again
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                // `WouldBlock` typically means "try again later", but we don't support that
+                // behaviour since a packet may have been partially copied already
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    panic!("Non-blocking writers aren't supported for packets")
+                }
+                // a partial write may have occurred in previous iterations, and the remainder of
+                // the packet will be dropped
+                Err(e) => return Err(e),
+            };
+
+            bytes = &bytes[copied..];
+
+            if copied == 0 {
+                break;
+            }
+
+            total_copied += copied;
+        }
+
+        Ok((total_copied, packet_len))
+    }
+
     /// Pop a single chunk of data from the queue. The `size_hint` argument is used to limit the
     /// number of bytes in the returned chunk iff the next chunk has stream data. If the returned
     /// chunk has packet data, the `size_hint` is ignored and the entire packet is returned.
@@ -508,6 +548,8 @@ mod tests {
         let src2 = [51, 52, 53];
         let mut dst1 = [0; 8];
         let mut dst2 = [0; 10];
+        let mut dst3 = [0; 8];
+        let mut dst4 = [0; 10];
 
         bq.push_packet(&src1[..], src1.len()).unwrap();
         bq.push_packet(&[][..], 0).unwrap();
@@ -517,12 +559,17 @@ mod tests {
         assert_eq!(bq.bytes.len(), 3);
         assert_eq!(bq.total_allocations, 3);
 
+        assert_eq!(8, bq.peek_packet(&mut dst3[..]).unwrap().0);
         assert_eq!(8, bq.pop(&mut dst1[..]).unwrap().0);
+        assert_eq!(0, bq.peek_packet(&mut dst4[..]).unwrap().0);
         assert_eq!(0, bq.pop(&mut dst2[..]).unwrap().0);
+        assert_eq!(3, bq.peek_packet(&mut dst4[..]).unwrap().0);
         assert_eq!(3, bq.pop(&mut dst2[..]).unwrap().0);
 
         assert_eq!(dst1, [1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(dst2, [51, 52, 53, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(dst3, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(dst4, [51, 52, 53, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(bq.num_bytes(), 0);
     }
 
@@ -545,6 +592,12 @@ mod tests {
             (3, 3, Some(ChunkType::Stream))
         );
         assert_eq!(buf[..3], [1, 2, 3]);
+
+        assert_eq!(
+            bq.peek_packet(&mut buf[..]).unwrap(),
+            (3, 3)
+        );
+        assert_eq!(buf[..3], [4, 5, 6]);
 
         assert_eq!(
             bq.pop(&mut buf[..]).unwrap(),
@@ -595,6 +648,12 @@ mod tests {
         assert_eq!(buf[..3], [4, 5, 6]);
 
         assert_eq!(
+            bq.peek_packet(&mut buf[..4]).unwrap(),
+            (4, 8)
+        );
+        assert_eq!(buf[..4], [7, 8, 9, 10]);
+
+        assert_eq!(
             bq.pop(&mut buf[..4]).unwrap(),
             (4, 8, Some(ChunkType::Packet))
         );
@@ -607,10 +666,21 @@ mod tests {
         assert_eq!(buf[..3], [15, 16, 17]);
 
         assert_eq!(
+            bq.peek_packet(&mut buf[..4]).unwrap(),
+            (4, 6)
+        );
+        assert_eq!(buf[..4], [100, 101, 102, 103]);
+
+        assert_eq!(
             bq.pop(&mut buf[..4]).unwrap(),
             (4, 6, Some(ChunkType::Packet))
         );
         assert_eq!(buf[..4], [100, 101, 102, 103]);
+
+        assert_eq!(
+            bq.peek_packet(&mut buf[..4]).unwrap(),
+            (0, 0)
+        );
 
         assert_eq!(
             bq.pop(&mut buf[..4]).unwrap(),
@@ -648,6 +718,10 @@ mod tests {
         bq.push_stream(&[1, 2, 3][..]).unwrap();
 
         let mut writer = TestWriter {};
+
+        // no stream data will be dropped, so length will not decrease
+        bq.peek_packet(&mut writer).unwrap_err();
+        assert_eq!(bq.num_bytes(), 6);
 
         // the remainder of the packet will be dropped, so length will decrease by 3 bytes
         bq.pop(&mut writer).unwrap_err();

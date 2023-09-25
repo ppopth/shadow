@@ -75,6 +75,18 @@ impl SharedBuf {
         self.num_writers
     }
 
+    // TODO: We should implement the method "peek" rather than "peek_packet", but we can't do that
+    // now because currently we cannot peek the stream in the byte queue
+    // SAFETY: Use this method only if the buffer consists of only the packets
+    pub fn peek_packet<W: std::io::Write>(
+        &self,
+        bytes: W,
+    ) -> Result<(usize, usize), std::io::Error> {
+        let (num_copied, num_removed_from_buf) = self.queue.peek_packet(bytes)?;
+
+        Ok((num_copied, num_removed_from_buf))
+    }
+
     pub fn read<W: std::io::Write>(
         &mut self,
         bytes: W,
