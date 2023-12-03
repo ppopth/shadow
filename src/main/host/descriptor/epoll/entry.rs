@@ -73,6 +73,12 @@ impl Entry {
         );
         self.state = new_state;
         self.collected.remove(changed);
+
+        // If the parity changes, it means that the size of the buffer changes.
+        // Let the epoll waiter collect the event again.
+        if changed.contains(FileState::INPUT_BUFFER_PARITY) {
+            self.collected.remove(FileState::READABLE);
+        }
     }
 
     pub fn get_listener_state(&self) -> FileState {
@@ -162,6 +168,9 @@ impl Entry {
         }
         if events.intersects(EpollEvents::EPOLLOUT) {
             state.insert(FileState::WRITABLE)
+        }
+        if events.intersects(EpollEvents::EPOLLET) {
+            state.insert(FileState::INPUT_BUFFER_PARITY)
         }
 
         state

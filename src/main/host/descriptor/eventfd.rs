@@ -212,6 +212,7 @@ impl EventFd {
         self.state
     }
 
+    // SAFETY: This function is not idempotent. Call it only when the counter changes.
     fn update_state(&mut self, cb_queue: &mut CallbackQueue) {
         if self.state.contains(FileState::CLOSED) {
             return;
@@ -223,9 +224,14 @@ impl EventFd {
         readable_writable.set(FileState::READABLE, self.counter > 0);
         // set the descriptor as writable if we can write a value of at least 1
         readable_writable.set(FileState::WRITABLE, self.counter < u64::MAX - 1);
+        // we assume that this function is called only when the counter changes, so flip the flag
+        readable_writable.set(
+            FileState::INPUT_BUFFER_PARITY,
+            !self.state.contains(FileState::INPUT_BUFFER_PARITY),
+        );
 
         self.copy_state(
-            FileState::READABLE | FileState::WRITABLE,
+            FileState::READABLE | FileState::WRITABLE | FileState::INPUT_BUFFER_PARITY,
             readable_writable,
             cb_queue,
         );

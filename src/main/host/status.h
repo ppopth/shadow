@@ -20,13 +20,15 @@ enum _Status {
     STATUS_FILE_WRITABLE = 1 << 2,
     /* user already called close */
     STATUS_FILE_CLOSED = 1 << 3,
+    /* flipped when the size of the input buffer changes */
+    STATUS_FILE_INPUT_BUFFER_PARITY = 1 << 4,
     /* a wakeup operation occurred on a futex */
-    STATUS_FUTEX_WAKEUP = 1 << 4,
+    STATUS_FUTEX_WAKEUP = 1 << 5,
     /* a listening socket is allowing connections; only applicable to connection-oriented unix
      * sockets */
-    STATUS_SOCKET_ALLOWING_CONNECT = 1 << 5,
+    STATUS_SOCKET_ALLOWING_CONNECT = 1 << 6,
     /* a child process had an event reportable via e.g. waitpid */
-    STATUS_CHILD_EVENT = 1 << 6,
+    STATUS_CHILD_EVENT = 1 << 7,
 };
 
 #endif // SRC_MAIN_HOST_STATUS_H

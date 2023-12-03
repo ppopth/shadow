@@ -116,6 +116,8 @@ bitflags::bitflags! {
         const WRITABLE = c::_Status_STATUS_FILE_WRITABLE;
         /// User already called close.
         const CLOSED = c::_Status_STATUS_FILE_CLOSED;
+        /// Flipped when the size of the input buffer changes
+        const INPUT_BUFFER_PARITY = c::_Status_STATUS_FILE_INPUT_BUFFER_PARITY;
         /// A wakeup operation occurred on a futex.
         const FUTEX_WAKEUP = c::_Status_STATUS_FUTEX_WAKEUP;
         /// A child process had an event reportable via e.g. waitpid.
