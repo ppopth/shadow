@@ -367,7 +367,11 @@ gboolean legacysocket_addToInputBuffer(LegacySocket* socket, const Host* host, P
 
     /* we just added a packet, so we are readable */
     if(socket->inputBufferLength > 0) {
-        legacyfile_adjustStatus((LegacyFile*)socket, STATUS_FILE_READABLE, TRUE, 0);
+        FileSignals signals = 0;
+        if (length > 0) {
+            signals |= FileSignals_TRIGGER_READABLE;
+        }
+        legacyfile_adjustStatus((LegacyFile*)socket, STATUS_FILE_READABLE, TRUE, signals);
     }
 
     return TRUE;
