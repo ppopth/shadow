@@ -146,7 +146,7 @@ bitflags::bitflags! {
     #[derive(Default, Copy, Clone, Debug)]
     #[repr(transparent)]
     pub struct FileSignals: u32 {
-        // TODO: this will be useful for supporting edge-triggered epoll "buffer changed" signals
+        const WRITTEN = 1;
     }
 }
 

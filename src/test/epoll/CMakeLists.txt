@@ -10,3 +10,6 @@ add_shadow_tests(BASENAME epoll-writeable LOGLEVEL debug)
 
 add_linux_tests(BASENAME epoll-rs COMMAND ../../target/debug/test_epoll --libc-passing)
 add_shadow_tests(BASENAME epoll-rs)
+
+add_linux_tests(BASENAME epoll-edge-rs COMMAND ../../target/debug/test_epoll_edge --libc-passing)
+add_shadow_tests(BASENAME epoll-edge-rs)

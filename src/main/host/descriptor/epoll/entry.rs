@@ -1,7 +1,7 @@
 use linux_api::epoll::EpollEvents;
 
 use crate::host::descriptor::listener::StateListenHandle;
-use crate::host::descriptor::FileState;
+use crate::host::descriptor::{FileSignals, FileState};
 
 /// Used to track the status of a file we are monitoring for events. Any complicated logic for
 /// deciding when a file has events that epoll should report should be specified in this object's
@@ -64,15 +64,21 @@ impl Entry {
         self.priority
     }
 
-    pub fn notify(&mut self, new_state: FileState, changed: FileState) {
+    pub fn notify(&mut self, new_state: FileState, changed: FileState, signals: FileSignals) {
         log::trace!(
-            "Notify old state {:?}, new state {:?}, changed {:?}",
+            "Notify old state {:?}, new state {:?}, changed {:?}, signals {:?}",
             self.state,
             new_state,
-            changed
+            changed,
+            signals,
         );
         self.state = new_state;
         self.collected.remove(changed);
+
+        // If the file is written again, let the epoll waiter collect the event again.
+        if signals.contains(FileSignals::WRITTEN) {
+            self.collected.remove(FileState::READABLE);
+        }
     }
 
     pub fn get_listener_state(&self) -> FileState {
@@ -83,6 +89,16 @@ impl Entry {
 
         // Return the file state changes that we want to be notified about.
         Self::state_from_events(self.interest).union(FileState::CLOSED)
+    }
+
+    pub fn get_listener_signals(&self) -> FileSignals {
+        let mut signals = FileSignals::empty();
+
+        if self.interest.intersects(EpollEvents::EPOLLET) {
+            signals.insert(FileSignals::WRITTEN);
+        }
+
+        signals
     }
 
     pub fn set_listener_handle(&mut self, handle: Option<StateListenHandle>) {
