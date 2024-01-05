@@ -209,7 +209,7 @@ where
         self,
         _header: &TcpHeader,
         _payload: Payload,
-    ) -> (TcpStateEnum<X>, Result<(), PushPacketError>) {
+    ) -> (TcpStateEnum<X>, Result<u32, PushPacketError>) {
         (self.into(), Err(PushPacketError::InvalidState))
     }
 
@@ -301,7 +301,7 @@ impl<X: Dependencies> TcpState<X> {
         &mut self,
         header: &TcpHeader,
         payload: Payload,
-    ) -> Result<(), PushPacketError> {
+    ) -> Result<u32, PushPacketError> {
         self.with_state(|state| state.push_packet(header, payload))
     }
 

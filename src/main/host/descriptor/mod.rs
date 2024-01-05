@@ -146,7 +146,8 @@ bitflags::bitflags! {
     #[derive(Default, Copy, Clone, Debug)]
     #[repr(transparent)]
     pub struct FileSignals: u32 {
-        const WRITTEN = 1;
+        /// The file has been written.
+        const WRITTEN = 1 << 0;
     }
 }
 

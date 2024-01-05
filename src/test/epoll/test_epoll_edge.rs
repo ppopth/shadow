@@ -44,21 +44,15 @@ fn do_epoll_wait(epoll_fd: i32, timeout: Duration, do_read: bool) -> WaiterResul
     }
 }
 
-fn test_multi_write() -> anyhow::Result<()> {
-    let (fd_client, fd_server) = socket_init_helper(
-        SocketInitMethod::Inet,
-        libc::SOCK_STREAM,
-        libc::SOCK_NONBLOCK,
-        /* bind_client = */ false,
-    );
+fn test_multi_write(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
     let epollfd = epoll::epoll_create()?;
 
-    test_utils::run_and_close_fds(&[epollfd, fd_client, fd_server], || {
+    test_utils::run_and_close_fds(&[epollfd, readfd, writefd], || {
         let mut event = epoll::EpollEvent::new(EpollFlags::EPOLLET | EpollFlags::EPOLLIN, 0);
         epoll::epoll_ctl(
             epollfd,
             epoll::EpollOp::EpollCtlAdd,
-            fd_server,
+            readfd,
             Some(&mut event),
         )?;
 
@@ -77,11 +71,11 @@ fn test_multi_write() -> anyhow::Result<()> {
         std::thread::sleep(timeout / 3);
 
         // Make the read-end readable.
-        unistd::write(fd_client, &[0])?;
+        unistd::write(writefd, &[0])?;
 
         // Wait again and make the read-end readable again.
         std::thread::sleep(timeout / 3);
-        unistd::write(fd_client, &[0])?;
+        unistd::write(writefd, &[0])?;
 
         let results = thread.join().unwrap();
 
@@ -100,21 +94,15 @@ fn test_multi_write() -> anyhow::Result<()> {
     })
 }
 
-fn test_write_then_read() -> anyhow::Result<()> {
-    let (fd_client, fd_server) = socket_init_helper(
-        SocketInitMethod::Inet,
-        libc::SOCK_STREAM,
-        libc::SOCK_NONBLOCK,
-        /* bind_client = */ false,
-    );
+fn test_write_then_read(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
     let epollfd = epoll::epoll_create()?;
 
-    test_utils::run_and_close_fds(&[epollfd, fd_client, fd_server], || {
+    test_utils::run_and_close_fds(&[epollfd, readfd, writefd], || {
         let mut event = epoll::EpollEvent::new(EpollFlags::EPOLLET | EpollFlags::EPOLLIN, 0);
         epoll::epoll_ctl(
             epollfd,
             epoll::EpollOp::EpollCtlAdd,
-            fd_server,
+            readfd,
             Some(&mut event),
         )?;
 
@@ -132,11 +120,11 @@ fn test_write_then_read() -> anyhow::Result<()> {
         std::thread::sleep(timeout / 3);
 
         // Make the read-end readable.
-        unistd::write(fd_client, &[0, 0])?;
+        unistd::write(writefd, &[0, 0])?;
 
         // Wait and read some, but not all, from the buffer.
         std::thread::sleep(timeout / 3);
-        unistd::read(fd_server, &mut [0])?;
+        unistd::read(readfd, &mut [0])?;
 
         let results = thread.join().unwrap();
 
@@ -153,21 +141,15 @@ fn test_write_then_read() -> anyhow::Result<()> {
     })
 }
 
-fn test_threads_multi_write() -> anyhow::Result<()> {
-    let (fd_client, fd_server) = socket_init_helper(
-        SocketInitMethod::Inet,
-        libc::SOCK_STREAM,
-        libc::SOCK_NONBLOCK,
-        /* bind_client = */ false,
-    );
+fn test_threads_multi_write(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
     let epollfd = epoll::epoll_create()?;
 
-    test_utils::run_and_close_fds(&[epollfd, fd_client, fd_server], || {
+    test_utils::run_and_close_fds(&[epollfd, readfd, writefd], || {
         let mut event = epoll::EpollEvent::new(EpollFlags::EPOLLET | EpollFlags::EPOLLIN, 0);
         epoll::epoll_ctl(
             epollfd,
             epoll::EpollOp::EpollCtlAdd,
-            fd_server,
+            readfd,
             Some(&mut event),
         )?;
 
@@ -183,11 +165,11 @@ fn test_threads_multi_write() -> anyhow::Result<()> {
         std::thread::sleep(timeout / 3);
 
         // Make the read-end readable.
-        unistd::write(fd_client, &[0])?;
+        unistd::write(writefd, &[0])?;
 
         // Wait again and make the read-end readable again.
         std::thread::sleep(timeout / 3);
-        unistd::write(fd_client, &[0])?;
+        unistd::write(writefd, &[0])?;
 
         let mut results = threads.map(|t| t.join().unwrap());
 
@@ -210,21 +192,15 @@ fn test_threads_multi_write() -> anyhow::Result<()> {
     })
 }
 
-fn test_writable() -> anyhow::Result<()> {
-    let (fd_client, fd_server) = socket_init_helper(
-        SocketInitMethod::Inet,
-        libc::SOCK_STREAM,
-        libc::SOCK_NONBLOCK,
-        /* bind_client = */ false,
-    );
+fn test_writable(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
     let epollfd = epoll::epoll_create()?;
 
-    test_utils::run_and_close_fds(&[epollfd, fd_client, fd_server], || {
+    test_utils::run_and_close_fds(&[epollfd, readfd, writefd], || {
         let mut event = epoll::EpollEvent::new(EpollFlags::EPOLLET | EpollFlags::EPOLLOUT, 0);
         epoll::epoll_ctl(
             epollfd,
             epoll::EpollOp::EpollCtlAdd,
-            fd_client,
+            writefd,
             Some(&mut event),
         )?;
 
@@ -243,21 +219,15 @@ fn test_writable() -> anyhow::Result<()> {
     })
 }
 
-fn test_writable_when_write() -> anyhow::Result<()> {
-    let (fd_client, fd_server) = socket_init_helper(
-        SocketInitMethod::Inet,
-        libc::SOCK_STREAM,
-        libc::SOCK_NONBLOCK,
-        /* bind_client = */ false,
-    );
+fn test_writable_when_write(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
     let epollfd = epoll::epoll_create()?;
 
-    test_utils::run_and_close_fds(&[epollfd, fd_client, fd_server], || {
+    test_utils::run_and_close_fds(&[epollfd, readfd, writefd], || {
         let mut event = epoll::EpollEvent::new(EpollFlags::EPOLLET | EpollFlags::EPOLLOUT, 0);
         epoll::epoll_ctl(
             epollfd,
             epoll::EpollOp::EpollCtlAdd,
-            fd_client,
+            writefd,
             Some(&mut event),
         )?;
 
@@ -275,7 +245,7 @@ fn test_writable_when_write() -> anyhow::Result<()> {
         std::thread::sleep(timeout / 2);
 
         // Write more.
-        unistd::write(fd_client, &[0])?;
+        unistd::write(writefd, &[0])?;
 
         let results = thread.join().unwrap();
 
@@ -292,6 +262,16 @@ fn test_writable_when_write() -> anyhow::Result<()> {
     })
 }
 
+fn tcp_fds_init_helper() -> (libc::c_int, libc::c_int) {
+    let (fd_client, fd_server) = socket_init_helper(
+        SocketInitMethod::Inet,
+        libc::SOCK_STREAM,
+        libc::SOCK_NONBLOCK,
+        /* bind_client = */ false,
+    );
+    (fd_server, fd_client)
+}
+
 fn main() -> anyhow::Result<()> {
     // should we restrict the tests we run?
     let filter_shadow_passing = std::env::args().any(|x| x == "--shadow-passing");
@@ -300,25 +280,57 @@ fn main() -> anyhow::Result<()> {
     let summarize = std::env::args().any(|x| x == "--summarize");
 
     let all_envs = set![TestEnvironment::Libc, TestEnvironment::Shadow];
-    let mut tests: Vec<test_utils::ShadowTest<(), anyhow::Error>> = vec![
-        ShadowTest::new("multi-write", test_multi_write, all_envs.clone()),
-        ShadowTest::new(
-            "write-then-read",
-            test_write_then_read,
-            set![TestEnvironment::Libc],
-        ),
-        ShadowTest::new(
-            "threads-multi-write",
-            test_threads_multi_write,
-            all_envs.clone(),
-        ),
-        ShadowTest::new("writable", test_writable, all_envs.clone()),
-        ShadowTest::new(
-            "writable-when-write",
-            test_writable_when_write,
-            all_envs.clone(),
-        ),
-    ];
+    let mut tests: Vec<test_utils::ShadowTest<(), anyhow::Error>> = vec![];
+
+    let mut add_tests = |fds_name: &str, fds_init_helper: fn() -> (libc::c_int, libc::c_int)| {
+        // add details to the test names to avoid duplicates
+        let append_args = |s| format!("{s} <fds={fds_name:?}>");
+
+        tests.extend(vec![
+            ShadowTest::new(
+                &append_args("multi-write"),
+                move || {
+                    let (readfd, writefd) = fds_init_helper();
+                    test_multi_write(readfd, writefd)
+                },
+                all_envs.clone(),
+            ),
+            ShadowTest::new(
+                &append_args("write-then-read"),
+                move || {
+                    let (readfd, writefd) = fds_init_helper();
+                    test_write_then_read(readfd, writefd)
+                },
+                set![TestEnvironment::Libc],
+            ),
+            ShadowTest::new(
+                &append_args("threads-multi-write"),
+                move || {
+                    let (readfd, writefd) = fds_init_helper();
+                    test_threads_multi_write(readfd, writefd)
+                },
+                all_envs.clone(),
+            ),
+            ShadowTest::new(
+                &append_args("writable"),
+                move || {
+                    let (readfd, writefd) = fds_init_helper();
+                    test_writable(readfd, writefd)
+                },
+                all_envs.clone(),
+            ),
+            ShadowTest::new(
+                &append_args("writable-when-write"),
+                move || {
+                    let (readfd, writefd) = fds_init_helper();
+                    test_writable_when_write(readfd, writefd)
+                },
+                all_envs.clone(),
+            ),
+        ]);
+    };
+
+    add_tests("tcp", tcp_fds_init_helper);
 
     if filter_shadow_passing {
         tests.retain(|x| x.passing(TestEnvironment::Shadow));
