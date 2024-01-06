@@ -94,6 +94,56 @@ fn test_multi_write(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result
     })
 }
 
+fn test_empty_payload_multi_write(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
+    let epollfd = epoll::epoll_create()?;
+
+    test_utils::run_and_close_fds(&[epollfd, readfd, writefd], || {
+        let mut event = epoll::EpollEvent::new(EpollFlags::EPOLLET | EpollFlags::EPOLLIN, 0);
+        epoll::epoll_ctl(
+            epollfd,
+            epoll::EpollOp::EpollCtlAdd,
+            readfd,
+            Some(&mut event),
+        )?;
+
+        let timeout = Duration::from_millis(100);
+
+        let thread = std::thread::spawn(move || {
+            vec![
+                do_epoll_wait(epollfd, timeout, /* do_read= */ false),
+                do_epoll_wait(epollfd, timeout, /* do_read= */ false),
+                // The last one is supposed to timeout.
+                do_epoll_wait(epollfd, timeout, /* do_read= */ false),
+            ]
+        });
+
+        // Wait for readers to block.
+        std::thread::sleep(timeout / 3);
+
+        // Make the read-end readable.
+        unistd::write(writefd, &[])?;
+
+        // Wait again and make the read-end readable again.
+        std::thread::sleep(timeout / 3);
+        unistd::write(writefd, &[])?;
+
+        let results = thread.join().unwrap();
+
+        // The first two waits should have received the event
+        for res in &results[..2] {
+            ensure_ord!(res.epoll_res, ==, Ok(1));
+            ensure_ord!(res.duration, <, timeout);
+            ensure_ord!(res.events[0], ==, epoll::EpollEvent::new(EpollFlags::EPOLLIN, 0));
+        }
+
+        // The last wait should have timed out with no events received.
+        ensure_ord!(results[2].epoll_res, ==, Ok(0));
+        ensure_ord!(results[2].duration, >=, timeout);
+
+        Ok(())
+    })
+}
+
 fn test_write_then_read(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
     let epollfd = epoll::epoll_create()?;
 
@@ -418,14 +468,24 @@ impl EpollEdgeTests {
 
         self.add_common_tests(fds_name, fds_init_helper);
 
-        self.tests.extend(vec![ShadowTest::new(
-            &append_args("writable-when-write"),
-            move || {
-                let (readfd, writefd) = fds_init_helper();
-                test_writable_when_write(readfd, writefd)
-            },
-            all_envs.clone(),
-        )]);
+        self.tests.extend(vec![
+            ShadowTest::new(
+                &append_args("writable-when-write"),
+                move || {
+                    let (readfd, writefd) = fds_init_helper();
+                    test_writable_when_write(readfd, writefd)
+                },
+                all_envs.clone(),
+            ),
+            ShadowTest::new(
+                &append_args("empty-payload-multi-write"),
+                move || {
+                    let (readfd, writefd) = fds_init_helper();
+                    test_empty_payload_multi_write(readfd, writefd)
+                },
+                all_envs.clone(),
+            ),
+        ]);
     }
 
     pub fn run_tests(&mut self) -> anyhow::Result<()> {
