@@ -216,7 +216,7 @@ impl TcpSocket {
         self.with_tcp_state(cb_queue, |s| {
             let pushed_len = s.push_packet(&header, payload).unwrap();
             let signals = if pushed_len > 0 {
-                FileSignals::WRITTEN
+                FileSignals::TRIGGER_READABLE
             } else {
                 FileSignals::empty()
             };

@@ -73,7 +73,9 @@ impl UdpSocket {
             _counter: ObjectCounter::new("UdpSocket"),
         };
 
-        CallbackQueue::queue_and_run(|cb_queue| socket.refresh_readable_writable(cb_queue));
+        CallbackQueue::queue_and_run(|cb_queue| {
+            socket.refresh_readable_writable(FileSignals::empty(), cb_queue)
+        });
 
         Arc::new(AtomicRefCell::new(socket))
     }
@@ -161,7 +163,8 @@ impl UdpSocket {
         log::trace!("Added a packet to the UDP socket's recv buffer");
         packet.add_status(PacketStatus::RcvSocketBuffered);
 
-        self.refresh_readable_writable(cb_queue);
+        // it triggers both readable and writable events
+        self.refresh_readable_writable(FileSignals::TRIGGER_READABLE, cb_queue);
     }
 
     pub fn pull_out_packet(&mut self, cb_queue: &mut CallbackQueue) -> Option<PacketRc> {
@@ -186,7 +189,7 @@ impl UdpSocket {
         packet.set_payload(&message, priority);
         packet.add_status(PacketStatus::SndCreated);
 
-        self.refresh_readable_writable(cb_queue);
+        self.refresh_readable_writable(FileSignals::empty(), cb_queue);
 
         Some(packet)
     }
@@ -457,7 +460,12 @@ impl UdpSocket {
             Ok(len)
         })();
 
-        socket_ref.refresh_readable_writable(cb_queue);
+        let signals = if result.is_ok() {
+            FileSignals::TRIGGER_WRITABLE
+        } else {
+            FileSignals::empty()
+        };
+        socket_ref.refresh_readable_writable(signals, cb_queue);
 
         // if the syscall would block and we don't have the MSG_DONTWAIT flag
         if result == Err(Errno::EWOULDBLOCK) && !flags.contains(MsgFlags::MSG_DONTWAIT) {
@@ -542,7 +550,7 @@ impl UdpSocket {
             })
         })();
 
-        socket_ref.refresh_readable_writable(cb_queue);
+        socket_ref.refresh_readable_writable(FileSignals::empty(), cb_queue);
 
         // if the syscall would block and we don't have the MSG_DONTWAIT flag
         if result.as_ref().err() == Some(&Errno::EWOULDBLOCK)
@@ -976,7 +984,7 @@ impl UdpSocket {
         self.state
     }
 
-    fn refresh_readable_writable(&mut self, cb_queue: &mut CallbackQueue) {
+    fn refresh_readable_writable(&mut self, signals: FileSignals, cb_queue: &mut CallbackQueue) {
         let readable = !self.recv_buffer.is_empty();
         let writable = self.send_buffer.has_space();
 
@@ -986,7 +994,7 @@ impl UdpSocket {
         self.update_state(
             /* mask= */ FileState::READABLE | FileState::WRITABLE,
             readable | writable,
-            FileSignals::empty(),
+            signals,
             cb_queue,
         );
     }

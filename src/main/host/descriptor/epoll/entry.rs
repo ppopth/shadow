@@ -75,9 +75,12 @@ impl Entry {
         self.state = new_state;
         self.collected.remove(changed);
 
-        // If the file is written again, let the epoll waiter collect the event again.
-        if signals.contains(FileSignals::WRITTEN) {
+        // If the file is written again, let the epoll waiter collect the events again.
+        if signals.contains(FileSignals::TRIGGER_READABLE) {
             self.collected.remove(FileState::READABLE);
+        }
+        if signals.contains(FileSignals::TRIGGER_WRITABLE) {
+            self.collected.remove(FileState::WRITABLE);
         }
     }
 
@@ -95,7 +98,7 @@ impl Entry {
         let mut signals = FileSignals::empty();
 
         if self.interest.intersects(EpollEvents::EPOLLET) {
-            signals.insert(FileSignals::WRITTEN);
+            signals.insert(FileSignals::TRIGGER_READABLE | FileSignals::TRIGGER_WRITABLE);
         }
 
         signals
@@ -439,7 +442,7 @@ mod tests {
         entry.notify(
             FileState::READABLE,
             FileState::empty(),
-            FileSignals::WRITTEN,
+            FileSignals::TRIGGER_READABLE,
         );
         assert!(entry.has_ready_events());
         assert_eq!(
