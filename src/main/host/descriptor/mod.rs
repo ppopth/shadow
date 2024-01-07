@@ -148,8 +148,6 @@ bitflags::bitflags! {
     pub struct FileSignals: u32 {
         /// Trigger a readable event, even if it's already readable.
         const TRIGGER_READABLE = 1 << 0;
-        /// Trigger a writable event, even if it's already writable.
-        const TRIGGER_WRITABLE = 1 << 1;
     }
 }
 

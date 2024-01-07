@@ -460,12 +460,7 @@ impl UdpSocket {
             Ok(len)
         })();
 
-        let signals = if result.is_ok() {
-            FileSignals::TRIGGER_WRITABLE
-        } else {
-            FileSignals::empty()
-        };
-        socket_ref.refresh_readable_writable(signals, cb_queue);
+        socket_ref.refresh_readable_writable(FileSignals::empty(), cb_queue);
 
         // if the syscall would block and we don't have the MSG_DONTWAIT flag
         if result == Err(Errno::EWOULDBLOCK) && !flags.contains(MsgFlags::MSG_DONTWAIT) {

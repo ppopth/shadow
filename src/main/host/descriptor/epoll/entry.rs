@@ -79,9 +79,6 @@ impl Entry {
         if signals.contains(FileSignals::TRIGGER_READABLE) {
             self.collected.remove(FileState::READABLE);
         }
-        if signals.contains(FileSignals::TRIGGER_WRITABLE) {
-            self.collected.remove(FileState::WRITABLE);
-        }
     }
 
     pub fn get_listener_state(&self) -> FileState {
@@ -98,7 +95,7 @@ impl Entry {
         let mut signals = FileSignals::empty();
 
         if self.interest.intersects(EpollEvents::EPOLLET) {
-            signals.insert(FileSignals::TRIGGER_READABLE | FileSignals::TRIGGER_WRITABLE);
+            signals.insert(FileSignals::TRIGGER_READABLE);
         }
 
         signals
