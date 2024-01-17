@@ -146,8 +146,8 @@ bitflags::bitflags! {
     #[derive(Default, Copy, Clone, Debug)]
     #[repr(transparent)]
     pub struct FileSignals: u32 {
-        /// Trigger a readable event, even if it's already readable.
-        const TRIGGER_READABLE = 1 << 0;
+        /// The read buffer grew.
+        const READ_BUFFER_GREW = 1 << 0;
     }
 }
 

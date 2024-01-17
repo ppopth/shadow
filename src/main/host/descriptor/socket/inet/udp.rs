@@ -163,8 +163,7 @@ impl UdpSocket {
         log::trace!("Added a packet to the UDP socket's recv buffer");
         packet.add_status(PacketStatus::RcvSocketBuffered);
 
-        // it triggers both readable and writable events
-        self.refresh_readable_writable(FileSignals::TRIGGER_READABLE, cb_queue);
+        self.refresh_readable_writable(FileSignals::READ_BUFFER_GREW, cb_queue);
     }
 
     pub fn pull_out_packet(&mut self, cb_queue: &mut CallbackQueue) -> Option<PacketRc> {

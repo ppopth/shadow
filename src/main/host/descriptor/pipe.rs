@@ -295,7 +295,7 @@ impl Pipe {
 
         let handle = pipe.buffer.as_ref().unwrap().borrow_mut().add_listener(
             monitoring_state,
-            BufferSignals::TRIGGER_READABLE,
+            BufferSignals::BUFFER_GREW,
             move |buffer_state, buffer_signals, cb_queue| {
                 // if the file hasn't been dropped
                 if let Some(pipe) = weak.upgrade() {
@@ -365,8 +365,8 @@ impl Pipe {
             if buffer_state.intersects(BufferState::READABLE | BufferState::NO_WRITERS) {
                 file_state.insert(FileState::READABLE);
             }
-            if buffer_signals.intersects(BufferSignals::TRIGGER_READABLE) {
-                file_signals.insert(FileSignals::TRIGGER_READABLE);
+            if buffer_signals.intersects(BufferSignals::BUFFER_GREW) {
+                file_signals.insert(FileSignals::READ_BUFFER_GREW);
             }
         }
 

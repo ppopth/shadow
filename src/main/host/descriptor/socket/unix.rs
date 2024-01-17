@@ -443,11 +443,11 @@ impl ProtocolState {
                 let weak = Weak::clone(socket);
                 let recv_buffer_handle = common.recv_buffer.borrow_mut().add_listener(
                     BufferState::READABLE,
-                    BufferSignals::TRIGGER_READABLE,
+                    BufferSignals::BUFFER_GREW,
                     move |_, signals, cb_queue| {
                         if let Some(socket) = weak.upgrade() {
-                            let signals = if signals.contains(BufferSignals::TRIGGER_READABLE) {
-                                FileSignals::TRIGGER_READABLE
+                            let signals = if signals.contains(BufferSignals::BUFFER_GREW) {
+                                FileSignals::READ_BUFFER_GREW
                             } else {
                                 FileSignals::empty()
                             };
@@ -1200,11 +1200,11 @@ impl Protocol for ConnOrientedInitial {
         let weak = Arc::downgrade(socket);
         let recv_buffer_handle = common.recv_buffer.borrow_mut().add_listener(
             BufferState::READABLE | BufferState::NO_WRITERS,
-            BufferSignals::TRIGGER_READABLE,
+            BufferSignals::BUFFER_GREW,
             move |_, signals, cb_queue| {
                 if let Some(socket) = weak.upgrade() {
-                    let signals = if signals.contains(BufferSignals::TRIGGER_READABLE) {
-                        FileSignals::TRIGGER_READABLE
+                    let signals = if signals.contains(BufferSignals::BUFFER_GREW) {
+                        FileSignals::READ_BUFFER_GREW
                     } else {
                         FileSignals::empty()
                     };
@@ -1267,11 +1267,11 @@ impl Protocol for ConnOrientedInitial {
         let weak = Arc::downgrade(socket);
         let recv_buffer_handle = common.recv_buffer.borrow_mut().add_listener(
             BufferState::READABLE | BufferState::NO_WRITERS,
-            BufferSignals::TRIGGER_READABLE,
+            BufferSignals::BUFFER_GREW,
             move |_, signals, cb_queue| {
                 if let Some(socket) = weak.upgrade() {
-                    let signals = if signals.contains(BufferSignals::TRIGGER_READABLE) {
-                        FileSignals::TRIGGER_READABLE
+                    let signals = if signals.contains(BufferSignals::BUFFER_GREW) {
+                        FileSignals::READ_BUFFER_GREW
                     } else {
                         FileSignals::empty()
                     };
@@ -1444,11 +1444,11 @@ impl Protocol for ConnOrientedListening {
         let weak = Arc::downgrade(&child_socket);
         let recv_buffer_handle = child_recv_buffer.borrow_mut().add_listener(
             BufferState::READABLE | BufferState::NO_WRITERS,
-            BufferSignals::TRIGGER_READABLE,
+            BufferSignals::BUFFER_GREW,
             move |_, signals, cb_queue| {
                 if let Some(socket) = weak.upgrade() {
-                    let signals = if signals.contains(BufferSignals::TRIGGER_READABLE) {
-                        FileSignals::TRIGGER_READABLE
+                    let signals = if signals.contains(BufferSignals::BUFFER_GREW) {
+                        FileSignals::READ_BUFFER_GREW
                     } else {
                         FileSignals::empty()
                     };

@@ -110,7 +110,7 @@ impl SharedBuf {
             .push_stream(bytes.take(self.space_available().try_into().unwrap()))?;
 
         let signals = if written > 0 {
-            BufferSignals::TRIGGER_READABLE
+            BufferSignals::BUFFER_GREW
         } else {
             BufferSignals::empty()
         };
@@ -136,7 +136,7 @@ impl SharedBuf {
 
         self.queue.push_packet(bytes.by_ref(), len)?;
 
-        self.refresh_state(BufferSignals::TRIGGER_READABLE, cb_queue);
+        self.refresh_state(BufferSignals::BUFFER_GREW, cb_queue);
 
         Ok(())
     }
@@ -253,8 +253,8 @@ bitflags::bitflags! {
 bitflags::bitflags! {
     #[derive(Default, Copy, Clone, Debug)]
     pub struct BufferSignals: u8 {
-        /// Trigger a readable event, even if it's already readable.
-        const TRIGGER_READABLE = 1 << 0;
+        /// The buffer grew.
+        const BUFFER_GREW = 1 << 0;
     }
 }
 

@@ -176,7 +176,7 @@ impl EventFd {
 
         self.counter += value;
         let signals = if self.counter > 0 {
-            FileSignals::TRIGGER_READABLE
+            FileSignals::READ_BUFFER_GREW
         } else {
             FileSignals::empty()
         };

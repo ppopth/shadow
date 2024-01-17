@@ -76,8 +76,18 @@ impl Entry {
         self.collected.remove(changed);
 
         // If the file is written again, let the epoll waiter collect the events again.
-        if signals.contains(FileSignals::TRIGGER_READABLE) {
-            self.collected.remove(FileState::READABLE);
+        if signals.contains(FileSignals::READ_BUFFER_GREW) {
+            // We only subscribe to `READ_BUFFER_GREW` signals for edge-triggered entries.
+            debug_assert!(self.interest.intersects(EpollEvents::EPOLLET));
+
+            // Ignore the `READ_BUFFER_GREW` if the file isn't READABLE.
+            if new_state.contains(FileState::READABLE) {
+                self.collected.remove(FileState::READABLE);
+            } else {
+                // If this occurs, we probably want to fix whatever file is broadcasting `READ_BUFFER_GREW`
+                // when not readable.
+                warn_once_then_debug!("Epoll received READ_BUFFER_GREW but state is not READABLE");
+            }
         }
     }
 
@@ -95,7 +105,7 @@ impl Entry {
         let mut signals = FileSignals::empty();
 
         if self.interest.intersects(EpollEvents::EPOLLET) {
-            signals.insert(FileSignals::TRIGGER_READABLE);
+            signals.insert(FileSignals::READ_BUFFER_GREW);
         }
 
         signals
@@ -439,13 +449,22 @@ mod tests {
         entry.notify(
             FileState::READABLE,
             FileState::empty(),
-            FileSignals::TRIGGER_READABLE,
+            FileSignals::READ_BUFFER_GREW,
         );
         assert!(entry.has_ready_events());
         assert_eq!(
             entry.collect_ready_events(),
             Some((EpollEvents::EPOLLIN, DATA))
         );
+
+        // When the file is not readable but we receives `READ_BUFFER_GREW`, there should be no
+        // ready events.
+        entry.notify(
+            FileState::empty(),
+            FileState::empty(),
+            FileSignals::READ_BUFFER_GREW,
+        );
+        assert!(!entry.has_ready_events());
 
         // State turns off.
         entry.notify(
