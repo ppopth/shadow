@@ -1019,6 +1019,7 @@ impl Protocol for ConnOrientedInitial {
         signals: FileSignals,
         cb_queue: &mut CallbackQueue,
     ) {
+        assert!(!signals.contains(FileSignals::READ_BUFFER_GREW));
         common.update_state(
             /* mask= */ FileState::all(),
             FileState::ACTIVE,
@@ -1660,6 +1661,7 @@ impl Protocol for ConnOrientedClosed {
         signals: FileSignals,
         cb_queue: &mut CallbackQueue,
     ) {
+        assert!(!signals.contains(FileSignals::READ_BUFFER_GREW));
         common.update_state(
             /* mask= */ FileState::all(),
             FileState::CLOSED,
@@ -1926,6 +1928,7 @@ impl Protocol for ConnLessClosed {
         signals: FileSignals,
         cb_queue: &mut CallbackQueue,
     ) {
+        assert!(!signals.contains(FileSignals::READ_BUFFER_GREW));
         common.update_state(
             /* mask= */ FileState::all(),
             FileState::CLOSED,

@@ -74,8 +74,7 @@ impl TcpSocket {
         // run a no-op function on the state, which will force the socket to update its file state
         // to match the tcp state
         CallbackQueue::queue_and_run(|cb_queue| {
-            rv.borrow_mut()
-                .with_tcp_state(cb_queue, |_state| ((), FileSignals::empty()))
+            rv.borrow_mut().with_tcp_state(cb_queue, |_state| ())
         });
 
         rv
@@ -105,8 +104,16 @@ impl TcpSocket {
         self.has_open_file = val;
     }
 
-    /// Update the current tcp state. The tcp state should only ever be updated through this method.
     fn with_tcp_state<T>(
+        &mut self,
+        cb_queue: &mut CallbackQueue,
+        f: impl FnOnce(&mut tcp::TcpState<TcpDeps>) -> T,
+    ) -> T {
+        self.with_tcp_state_and_signal(cb_queue, |state| (f(state), FileSignals::empty()))
+    }
+
+    /// Update the current tcp state. The tcp state should only ever be updated through this method.
+    fn with_tcp_state_and_signal<T>(
         &mut self,
         cb_queue: &mut CallbackQueue,
         f: impl FnOnce(&mut tcp::TcpState<TcpDeps>) -> (T, FileSignals),
@@ -213,7 +220,7 @@ impl TcpSocket {
         assert_eq!(num_bytes_copied, packet.payload_size());
         let payload = tcp::Payload(vec![payload.freeze()]);
 
-        self.with_tcp_state(cb_queue, |s| {
+        self.with_tcp_state_and_signal(cb_queue, |s| {
             let pushed_len = s.push_packet(&header, payload).unwrap();
             let signals = if pushed_len > 0 {
                 FileSignals::READ_BUFFER_GREW
@@ -235,7 +242,7 @@ impl TcpSocket {
         debug_assert_eq!(self.has_data_to_send(), wants_to_send);
 
         // pop a packet from the socket
-        let rv = self.with_tcp_state(cb_queue, |s| (s.pop_packet(), FileSignals::empty()));
+        let rv = self.with_tcp_state(cb_queue, |s| s.pop_packet());
 
         let (header, payload) = match rv {
             Ok(x) => x,
@@ -317,7 +324,7 @@ impl TcpSocket {
 
     pub fn close(&mut self, cb_queue: &mut CallbackQueue) -> Result<(), SyscallError> {
         // we don't expect close() to ever have an error
-        self.with_tcp_state(cb_queue, |state| (state.close(), FileSignals::empty()))
+        self.with_tcp_state(cb_queue, |state| state.close())
             .unwrap();
 
         // add the closed flag and remove all other flags
@@ -427,9 +434,7 @@ impl TcpSocket {
         let result = (|| {
             let reader = IoVecReader::new(args.iovs, mem);
 
-            let rv = socket_ref.with_tcp_state(cb_queue, |state| {
-                (state.send(reader, len), FileSignals::empty())
-            });
+            let rv = socket_ref.with_tcp_state(cb_queue, |state| state.send(reader, len));
 
             let num_sent = match rv {
                 Ok(x) => x,
@@ -464,9 +469,7 @@ impl TcpSocket {
         let socket_ref = &mut *socket.borrow_mut();
 
         // if there was an asynchronous error, return it
-        if let Some(error) = socket_ref.with_tcp_state(cb_queue, |state| {
-            (state.clear_error(), FileSignals::empty())
-        }) {
+        if let Some(error) = socket_ref.with_tcp_state(cb_queue, |state| state.clear_error()) {
             // by returning this error, we're probably (but not necessarily) returning a previous
             // connect() result
             socket_ref.connect_result_is_pending = false;
@@ -489,9 +492,7 @@ impl TcpSocket {
         let result = (|| {
             let writer = IoVecWriter::new(args.iovs, mem);
 
-            let rv = socket_ref.with_tcp_state(cb_queue, |state| {
-                (state.recv(writer, len), FileSignals::empty())
-            });
+            let rv = socket_ref.with_tcp_state(cb_queue, |state| state.recv(writer, len));
 
             let num_recv = match rv {
                 Ok(x) => x,
@@ -560,9 +561,7 @@ impl TcpSocket {
         let rv = if is_associated {
             // if already associated, do nothing
             let associate_fn = || Ok(None);
-            socket_ref.with_tcp_state(cb_queue, |state| {
-                (state.listen(backlog, associate_fn), FileSignals::empty())
-            })
+            socket_ref.with_tcp_state(cb_queue, |state| state.listen(backlog, associate_fn))
         } else {
             // if not associated, associate and return the handle
             let associate_fn = || {
@@ -585,9 +584,7 @@ impl TcpSocket {
 
                 Ok::<_, SyscallError>(Some(handle))
             };
-            socket_ref.with_tcp_state(cb_queue, |state| {
-                (state.listen(backlog, associate_fn), FileSignals::empty())
-            })
+            socket_ref.with_tcp_state(cb_queue, |state| state.listen(backlog, associate_fn))
         };
 
         let handle = match rv {
@@ -615,9 +612,7 @@ impl TcpSocket {
         let socket_ref = &mut *socket.borrow_mut();
 
         // if there was an asynchronous error, return it
-        if let Some(error) = socket_ref.with_tcp_state(cb_queue, |state| {
-            (state.clear_error(), FileSignals::empty())
-        }) {
+        if let Some(error) = socket_ref.with_tcp_state(cb_queue, |state| state.clear_error()) {
             // by returning this error, we're probably (but not necessarily) returning a previous
             // connect() result
             socket_ref.connect_result_is_pending = false;
@@ -672,9 +667,7 @@ impl TcpSocket {
 
             // it's already associated so use the existing address
             let associate_fn = || Ok((local_addr, None));
-            socket_ref.with_tcp_state(cb_queue, |state| {
-                (state.connect(peer_addr, associate_fn), FileSignals::empty())
-            })
+            socket_ref.with_tcp_state(cb_queue, |state| state.connect(peer_addr, associate_fn))
         } else {
             // if not associated, associate and return the handle
             let associate_fn = || {
@@ -701,9 +694,7 @@ impl TcpSocket {
                 // use the actual local address that was assigned (will have port != 0)
                 Ok((local_addr, Some(handle)))
             };
-            socket_ref.with_tcp_state(cb_queue, |state| {
-                (state.connect(peer_addr, associate_fn), FileSignals::empty())
-            })
+            socket_ref.with_tcp_state(cb_queue, |state| state.connect(peer_addr, associate_fn))
         };
 
         let handle = match rv {
@@ -761,7 +752,7 @@ impl TcpSocket {
         rng: impl rand::Rng,
         cb_queue: &mut CallbackQueue,
     ) -> Result<OpenFile, SyscallError> {
-        let rv = self.with_tcp_state(cb_queue, |state| (state.accept(), FileSignals::empty()));
+        let rv = self.with_tcp_state(cb_queue, |state| state.accept());
 
         let accepted_state = match rv {
             Ok(x) => x,
@@ -802,7 +793,7 @@ impl TcpSocket {
         // to match the tcp state
         new_socket
             .borrow_mut()
-            .with_tcp_state(cb_queue, |_state| ((), FileSignals::empty()));
+            .with_tcp_state(cb_queue, |_state| ());
 
         // TODO: if the association fails, we lose the child socket
 
@@ -853,9 +844,7 @@ impl TcpSocket {
         };
 
         if let Some(tcp_how) = tcp_how {
-            if let Err(e) = self.with_tcp_state(cb_queue, |state| {
-                (state.shutdown(tcp_how), FileSignals::empty())
-            }) {
+            if let Err(e) = self.with_tcp_state(cb_queue, |state| state.shutdown(tcp_how)) {
                 match e {
                     tcp::ShutdownError::NotConnected => return Err(Errno::ENOTCONN.into()),
                     tcp::ShutdownError::InvalidState => return Err(Errno::EINVAL.into()),
@@ -894,9 +883,7 @@ impl TcpSocket {
             (libc::SOL_SOCKET, libc::SO_ERROR) => {
                 // may update the socket's state (for example, reading `SO_ERROR` will make `poll()`
                 // stop returning `POLLERR` for the socket)
-                let error = self.with_tcp_state(cb_queue, |state| {
-                    (state.clear_error(), FileSignals::empty())
-                });
+                let error = self.with_tcp_state(cb_queue, |state| state.clear_error());
                 let error = error.map(tcp_error_to_errno).map(Into::into).unwrap_or(0);
 
                 let optval_ptr = optval_ptr.cast::<libc::c_int>();
@@ -1101,7 +1088,6 @@ impl tcp::Dependencies for TcpDeps {
                 CallbackQueue::queue_and_run(|cb_queue| {
                     socket.borrow_mut().with_tcp_state(cb_queue, |state| {
                         f(state, registered_by);
-                        ((), FileSignals::empty())
                     })
                 });
             });

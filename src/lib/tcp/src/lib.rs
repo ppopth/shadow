@@ -205,6 +205,9 @@ where
         (self.into(), Err(RecvError::InvalidState))
     }
 
+    /// Returns the number of bytes added to the TCP state's receive buffer. This may be
+    /// smaller (ex: duplicate packet) or larger (ex: there is a non-empty reassembly queue)
+    /// than the packet payload length.
     fn push_packet(
         self,
         _header: &TcpHeader,
