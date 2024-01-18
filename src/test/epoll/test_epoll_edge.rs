@@ -94,7 +94,7 @@ fn test_multi_write(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result
     })
 }
 
-fn test_write_then_read(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
+fn test_write_then_partial_read(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
     let epollfd = epoll::epoll_create()?;
 
     test_utils::run_and_close_fds(&[epollfd, readfd, writefd], || {
@@ -345,9 +345,9 @@ fn main() -> anyhow::Result<()> {
                         all_envs.clone(),
                     ),
                     ShadowTest::new(
-                        &append_args("write-then-read", swapped),
-                        extend_test(test_write_then_read),
-                        set![TestEnvironment::Libc],
+                        &append_args("write-then-partial-read", swapped),
+                        extend_test(test_write_then_partial_read),
+                        all_envs.clone(),
                     ),
                     ShadowTest::new(
                         &append_args("threads-multi-write", swapped),
