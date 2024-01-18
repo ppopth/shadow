@@ -192,6 +192,74 @@ fn test_threads_multi_write(readfd: libc::c_int, writefd: libc::c_int) -> anyhow
     })
 }
 
+fn test_oneshot_multi_write(readfd: libc::c_int, writefd: libc::c_int) -> anyhow::Result<()> {
+    let epollfd = epoll::epoll_create()?;
+
+    test_utils::run_and_close_fds(&[epollfd, readfd, writefd], || {
+        let mut event = epoll::EpollEvent::new(
+            EpollFlags::EPOLLONESHOT | EpollFlags::EPOLLET | EpollFlags::EPOLLIN,
+            0,
+        );
+        epoll::epoll_ctl(
+            epollfd,
+            epoll::EpollOp::EpollCtlAdd,
+            readfd,
+            Some(&mut event),
+        )?;
+
+        let timeout = Duration::from_millis(100);
+
+        let thread = std::thread::spawn(move || {
+            vec![
+                do_epoll_wait(epollfd, timeout, /* do_read= */ false),
+                do_epoll_wait(epollfd, timeout, /* do_read= */ false),
+                do_epoll_wait(epollfd, timeout, /* do_read= */ false),
+            ]
+        });
+
+        // Wait for readers to block.
+        std::thread::sleep(timeout / 3);
+
+        // Make the read-end readable.
+        unistd::write(writefd, &[0])?;
+
+        // Wait again and make the read-end readable again.
+        std::thread::sleep(timeout / 3);
+        unistd::write(writefd, &[0])?;
+
+        // Wait for the second wait to time out.
+        std::thread::sleep(timeout);
+
+        epoll::epoll_ctl(
+            epollfd,
+            epoll::EpollOp::EpollCtlMod,
+            readfd,
+            Some(&mut event),
+        )?;
+
+        // Make the read-end readable.
+        unistd::write(writefd, &[0])?;
+
+        let results = thread.join().unwrap();
+
+        // The first wait should have received the event
+        ensure_ord!(results[0].epoll_res, ==, Ok(1));
+        ensure_ord!(results[0].duration, <, timeout);
+        ensure_ord!(results[0].events[0], ==, epoll::EpollEvent::new(EpollFlags::EPOLLIN, 0));
+
+        // The second wait should have timed out with no events received.
+        ensure_ord!(results[1].epoll_res, ==, Ok(0));
+        ensure_ord!(results[1].duration, >=, timeout);
+
+        // The third wait should have received the event
+        ensure_ord!(results[2].epoll_res, ==, Ok(1));
+        ensure_ord!(results[2].duration, <, timeout);
+        ensure_ord!(results[2].events[0], ==, epoll::EpollEvent::new(EpollFlags::EPOLLIN, 0));
+
+        Ok(())
+    })
+}
+
 fn test_eventfd_multi_write() -> anyhow::Result<()> {
     let efd =
         test_utils::check_system_call!(|| unsafe { libc::eventfd(0, libc::EFD_NONBLOCK) }, &[])
@@ -342,6 +410,11 @@ fn main() -> anyhow::Result<()> {
                     ShadowTest::new(
                         &append_args("multi-write", swapped),
                         extend_test(test_multi_write),
+                        all_envs.clone(),
+                    ),
+                    ShadowTest::new(
+                        &append_args("oneshot-multi-write", swapped),
+                        extend_test(test_oneshot_multi_write),
                         all_envs.clone(),
                     ),
                     ShadowTest::new(
