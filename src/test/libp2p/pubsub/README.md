@@ -22,3 +22,24 @@ $ ./gen_graph.py 10 20 | tee graph.txt
 8 9
 9
 ```
+
+## Shadow config file
+
+There is a script called `gen_eth_config.py` to generate a shadow config file.
+
+The usage is `./gen_eth_config.py [number-of-nodes]`.
+
+```bash
+$ ./gen_eth_config.py 4
+general:
+  model_unblocked_syscall_latency: true
+  stop_time: 1 hour
+hosts:
+  peer0: ...
+  peer1: ...
+  peer2: ...
+  peer3: ...
+network:
+  graph:
+    type: 1_gbit_switch
+```
