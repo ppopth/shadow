@@ -1,0 +1,98 @@
+general:
+  model_unblocked_syscall_latency: true
+  stop_time: 5 min
+hosts:
+  peer0:
+    ip_addr: 1.0.0.1
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '0'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+  peer1:
+    ip_addr: 1.0.0.2
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '1'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+  peer2:
+    ip_addr: 1.0.0.3
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '2'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+  peer3:
+    ip_addr: 1.0.0.4
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '3'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+  peer4:
+    ip_addr: 1.0.0.5
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '4'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+  peer5:
+    ip_addr: 1.0.0.6
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '5'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+  peer6:
+    ip_addr: 1.0.0.7
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '6'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+  peer7:
+    ip_addr: 1.0.0.8
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '7'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+  peer8:
+    ip_addr: 1.0.0.9
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '8'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+  peer9:
+    ip_addr: 1.0.0.10
+    network_node_id: 0
+    processes:
+    - args:
+      - ../../../graph.txt
+      - '9'
+      expected_final_state: running
+      path: ../../../target/debug/test_libp2p_eth
+network:
+  graph:
+    type: 1_gbit_switch
+
