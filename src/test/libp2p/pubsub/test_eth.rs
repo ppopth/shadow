@@ -2,16 +2,18 @@ use futures::prelude::*;
 use libp2p::gossipsub::{IdentTopic as Topic, TopicHash};
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::{gossipsub, multiaddr::Protocol, noise, tcp, yamux, Multiaddr};
+use rand::seq::SliceRandom;
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
 use std::{error::Error, net::Ipv4Addr, sync::Arc, time::SystemTime};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{Duration, Instant};
 
 // Ethereum network configs
 const SLOTS_PER_EPOCH: u64 = 4;
 const SECONDS_PER_SLOT: u64 = 12;
+const MAX_COMMITTEES_PER_SLOT: usize = 2;
 // Sat Jan 01 2000 00:01:00 GMT+0000
 const GENESIS_DURATION_SINCE_UNIX_EPOCH: Duration = Duration::from_secs(946684860);
 
@@ -103,7 +105,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 macro_rules! wrapper_impl {
     ($ident:ident, $ty:ty) => {
-        #[derive(Serialize, Deserialize, PartialEq, Eq, Copy, Clone)]
+        #[derive(Serialize, Deserialize, Debug, PartialOrd, Ord, PartialEq, Eq, Copy, Clone)]
         struct $ident($ty);
 
         impl From<$ty> for $ident {
@@ -138,14 +140,18 @@ impl From<Slot> for Epoch {
 #[derive(Copy, Clone)]
 enum GossipTopic {
     BeaconBlock,
+    // Subnets are determined by the committee ids
+    Attestation(CommitteeId),
 }
 
 const BEACON_BLOCK_TOPIC: &str = "beacon_block";
+const BEACON_ATTESTATION_PREFIX: &str = "beacon_attestation_";
 
 impl std::fmt::Display for GossipTopic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let topic = match self {
-            GossipTopic::BeaconBlock => String::from(BEACON_BLOCK_TOPIC),
+            GossipTopic::BeaconBlock => BEACON_BLOCK_TOPIC.into(),
+            GossipTopic::Attestation(index) => format!("{}{}", BEACON_ATTESTATION_PREFIX, index),
         };
         write!(f, "{}", topic)
     }
@@ -167,18 +173,31 @@ impl From<GossipTopic> for TopicHash {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct BeaconBlock {
     proposer: ValidatorId,
     slot: Slot,
 }
+#[derive(Serialize, Deserialize, Clone)]
+struct Attestation {
+    attestor: ValidatorId,
+    slot: Slot,
+    cmid: CommitteeId,
+    block_slot: Slot,
+}
 #[derive(Serialize, Deserialize)]
 enum MessageHeader {
     BeaconBlock(BeaconBlock),
+    Attestation(Attestation),
 }
 impl From<BeaconBlock> for MessageHeader {
     fn from(block: BeaconBlock) -> Self {
         Self::BeaconBlock(block)
+    }
+}
+impl From<Attestation> for MessageHeader {
+    fn from(attestation: Attestation) -> Self {
+        Self::Attestation(attestation)
     }
 }
 struct Message {
@@ -187,6 +206,7 @@ struct Message {
 }
 
 const BEACON_BLOCK_PADDING_SIZE: usize = 128 << 10; // 128KB
+const ATTESTATION_PADDING_SIZE: usize = 256;
 
 impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -199,6 +219,7 @@ impl Message {
     fn new(header: MessageHeader) -> Self {
         let size = match header {
             MessageHeader::BeaconBlock(_) => BEACON_BLOCK_PADDING_SIZE,
+            MessageHeader::Attestation(_) => ATTESTATION_PADDING_SIZE,
         };
         let padding = {
             let mut padding = vec![0; size];
@@ -215,6 +236,7 @@ impl Message {
     fn topic(&self) -> GossipTopic {
         match self.header {
             MessageHeader::BeaconBlock(_) => GossipTopic::BeaconBlock,
+            MessageHeader::Attestation(Attestation { cmid, .. }) => GossipTopic::Attestation(cmid),
         }
     }
     fn encode(&self) -> Vec<u8> {
@@ -253,11 +275,16 @@ struct EthBehaviour {
 struct EthNode {
     vid: ValidatorId,
     network: EthNetwork,
+    latest_received_block: RwLock<Option<BeaconBlock>>,
 }
 
 impl EthNode {
     fn new(vid: ValidatorId, network: EthNetwork) -> Self {
-        Self { vid, network }
+        Self {
+            vid,
+            network,
+            latest_received_block: RwLock::new(None),
+        }
     }
     async fn propose(self: Arc<Self>, tx: mpsc::Sender<Message>) -> ! {
         let mut interval = tokio::time::interval_at(
@@ -272,20 +299,68 @@ impl EthNode {
             let proposer_id = self.network.proposer(slot);
             // If it's itself, publish a block
             if proposer_id == self.vid {
-                let message = Message::new(MessageHeader::from(BeaconBlock {
+                let block = BeaconBlock {
                     proposer: proposer_id,
                     slot,
-                }));
+                };
+                self.clone().on_block(&block).await;
+                let message = Message::new(MessageHeader::from(block));
                 if let Err(e) = tx.send(message).await {
                     println!("Sending to publish error: {e:?}");
                 }
             }
         }
     }
+    async fn attest(self: Arc<Self>, tx: mpsc::Sender<Message>) -> ! {
+        let slot_duration = Duration::from_secs(SECONDS_PER_SLOT);
+        let mut interval = tokio::time::interval_at(
+            self.network.genesis_instant() + slot_duration / 3,
+            slot_duration,
+        );
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let current_slot = self.network.current_slot();
+            // Figure out if the node is supposed to publish an attestation in this slot
+            let (slot, cmid) = self.network.committee(self.vid, Epoch::from(current_slot));
+            if slot == current_slot {
+                let Some(ref latest_block) = *self.latest_received_block.read().await else {
+                    continue;
+                };
+                let attestation = Attestation {
+                    attestor: self.vid,
+                    slot,
+                    cmid,
+                    block_slot: latest_block.slot,
+                };
+                let message = Message::new(MessageHeader::from(attestation));
+                if let Err(e) = tx.send(message).await {
+                    println!("Sending to publish error: {e:?}");
+                }
+            }
+        }
+    }
+    async fn on_block(self: Arc<Self>, block: &BeaconBlock) {
+        // Check if the received block is not older than the latest received block
+        if let Some(ref latest_block) = *self.latest_received_block.read().await {
+            if block.slot < latest_block.slot {
+                println!("Received older block");
+            }
+        }
+        *self.latest_received_block.write().await = Some(block.clone());
+    }
     async fn run(self: Arc<Self>, mut swarm: Swarm<EthBehaviour>) -> Result<(), Box<dyn Error>> {
         // All nodes are supposed to join the beacon_block topic
         let topic = GossipTopic::BeaconBlock;
         swarm.behaviour_mut().gossipsub.subscribe(&topic.into())?;
+
+        // FIXME: We don't have a peer discovery yet so we will join all the
+        // topics even if we are not supposed to
+        for cmid in 0..MAX_COMMITTEES_PER_SLOT {
+            let cmid = CommitteeId::from(cmid);
+            let topic = GossipTopic::Attestation(cmid);
+            swarm.behaviour_mut().gossipsub.subscribe(&topic.into())?;
+        }
 
         // Create a channel to receive messages to publish
         let (tx, mut rx) = mpsc::channel::<Message>(PUBLISH_BUFFER_SIZE);
@@ -296,6 +371,12 @@ impl EthNode {
         let cloned_tx = tx.clone();
         handles.push(tokio::spawn(async move {
             cloned_node.propose(cloned_tx).await;
+        }));
+        // Spawn a job to publish attestations
+        let cloned_node = Arc::clone(&self);
+        let cloned_tx = tx.clone();
+        handles.push(tokio::spawn(async move {
+            cloned_node.attest(cloned_tx).await;
         }));
 
         let mut handles = futures::future::select_all(handles.into_iter());
@@ -331,12 +412,14 @@ impl EthNode {
                         let message = Message::decode(message.data.as_slice());
                         match &message.header {
                             MessageHeader::BeaconBlock(block) => {
+                                self.clone().on_block(block).await;
                                 println!("Got block from slot={} vid={} msgid={}",
                                      block.slot,
                                      block.proposer,
                                      message.id(),
                                 );
                             },
+                            _ => {},
                         }
                     },
                     _ => {},
@@ -381,17 +464,35 @@ impl EthNetwork {
         let id = rng.gen_range(0..self.num_validators);
         ValidatorId(id)
     }
+    // Every validator is supposed to make an attestation in every epoch, so it should return the
+    // slot and the committee id
+    fn committee(&self, vid: ValidatorId, epoch: Epoch) -> (Slot, CommitteeId) {
+        let mut rng = DigestRng::new(Digest::Committee(epoch));
+        let vid = usize::from(vid);
+
+        // Shuffle all the validators
+        let mut permutation: Vec<usize> = (0..self.num_validators).collect::<Vec<_>>();
+        permutation.as_mut_slice().shuffle(&mut rng);
+
+        let idx = permutation[vid] % (MAX_COMMITTEES_PER_SLOT * SLOTS_PER_EPOCH as usize);
+        let slot_in_epoch = (idx / MAX_COMMITTEES_PER_SLOT) as u64;
+        let slot = Slot::from(slot_in_epoch + u64::from(epoch) * SLOTS_PER_EPOCH);
+        let cmid = CommitteeId::from(idx % MAX_COMMITTEES_PER_SLOT);
+        (slot, cmid)
+    }
 }
 
 #[derive(PartialEq, Eq, Copy, Clone)]
 enum Digest {
     Proposer(Slot),
+    Committee(Epoch),
 }
 
 impl From<Digest> for [u8; 32] {
     fn from(digest: Digest) -> Self {
         let prehash = match digest {
             Digest::Proposer(slot) => format!("proposer/{}", slot),
+            Digest::Committee(epoch) => format!("committee/{}", epoch),
         };
         let hash = ring::digest::digest(&ring::digest::SHA256, prehash.as_bytes());
         hash.as_ref()[..32].try_into().unwrap()
