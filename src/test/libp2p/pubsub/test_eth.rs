@@ -14,6 +14,7 @@ use tokio::time::{Duration, Instant};
 const SLOTS_PER_EPOCH: u64 = 4;
 const SECONDS_PER_SLOT: u64 = 12;
 const MAX_COMMITTEES_PER_SLOT: usize = 2;
+const TARGET_AGGREGATORS_PER_COMMITTEE: usize = 1;
 // Sat Jan 01 2000 00:01:00 GMT+0000
 const GENESIS_DURATION_SINCE_UNIX_EPOCH: Duration = Duration::from_secs(946684860);
 
@@ -140,17 +141,20 @@ impl From<Slot> for Epoch {
 #[derive(Copy, Clone)]
 enum GossipTopic {
     BeaconBlock,
+    BeaconAggregateAndProof,
     // Subnets are determined by the committee ids
     Attestation(CommitteeId),
 }
 
 const BEACON_BLOCK_TOPIC: &str = "beacon_block";
+const BEACON_AGGREGATE_AND_PROOF_TOPIC: &str = "beacon_aggregate_and_proof";
 const BEACON_ATTESTATION_PREFIX: &str = "beacon_attestation_";
 
 impl std::fmt::Display for GossipTopic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let topic = match self {
             GossipTopic::BeaconBlock => BEACON_BLOCK_TOPIC.into(),
+            GossipTopic::BeaconAggregateAndProof => BEACON_AGGREGATE_AND_PROOF_TOPIC.into(),
             GossipTopic::Attestation(index) => format!("{}{}", BEACON_ATTESTATION_PREFIX, index),
         };
         write!(f, "{}", topic)
@@ -185,10 +189,19 @@ struct Attestation {
     cmid: CommitteeId,
     block_slot: Slot,
 }
+#[derive(Serialize, Deserialize, Clone)]
+struct Aggregate {
+    aggregator: ValidatorId,
+    slot: Slot,
+    num_attestors: usize,
+    cmid: CommitteeId,
+    block_slot: Slot,
+}
 #[derive(Serialize, Deserialize)]
 enum MessageHeader {
     BeaconBlock(BeaconBlock),
     Attestation(Attestation),
+    Aggregate(Aggregate),
 }
 impl From<BeaconBlock> for MessageHeader {
     fn from(block: BeaconBlock) -> Self {
@@ -200,6 +213,11 @@ impl From<Attestation> for MessageHeader {
         Self::Attestation(attestation)
     }
 }
+impl From<Aggregate> for MessageHeader {
+    fn from(aggregate: Aggregate) -> Self {
+        Self::Aggregate(aggregate)
+    }
+}
 struct Message {
     header: MessageHeader,
     padding: Vec<u8>,
@@ -207,6 +225,7 @@ struct Message {
 
 const BEACON_BLOCK_PADDING_SIZE: usize = 128 << 10; // 128KB
 const ATTESTATION_PADDING_SIZE: usize = 256;
+const AGGREGATE_PADDING_SIZE: usize = 256;
 
 impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -220,6 +239,7 @@ impl Message {
         let size = match header {
             MessageHeader::BeaconBlock(_) => BEACON_BLOCK_PADDING_SIZE,
             MessageHeader::Attestation(_) => ATTESTATION_PADDING_SIZE,
+            MessageHeader::Aggregate(_) => AGGREGATE_PADDING_SIZE,
         };
         let padding = {
             let mut padding = vec![0; size];
@@ -237,6 +257,7 @@ impl Message {
         match self.header {
             MessageHeader::BeaconBlock(_) => GossipTopic::BeaconBlock,
             MessageHeader::Attestation(Attestation { cmid, .. }) => GossipTopic::Attestation(cmid),
+            MessageHeader::Aggregate(_) => GossipTopic::BeaconAggregateAndProof,
         }
     }
     fn encode(&self) -> Vec<u8> {
@@ -276,6 +297,8 @@ struct EthNode {
     vid: ValidatorId,
     network: EthNetwork,
     latest_received_block: RwLock<Option<BeaconBlock>>,
+    latest_attestation: RwLock<Option<Attestation>>,
+    seen_attestations: RwLock<Vec<Attestation>>,
 }
 
 impl EthNode {
@@ -284,6 +307,8 @@ impl EthNode {
             vid,
             network,
             latest_received_block: RwLock::new(None),
+            latest_attestation: RwLock::new(None),
+            seen_attestations: RwLock::new(Vec::new()),
         }
     }
     async fn propose(self: Arc<Self>, tx: mpsc::Sender<Message>) -> ! {
@@ -333,10 +358,66 @@ impl EthNode {
                     cmid,
                     block_slot: latest_block.slot,
                 };
+                // Save the latest attestation that it makes
+                *self.latest_attestation.write().await = Some(attestation.clone());
+                self.clone().on_attestation(&attestation).await;
                 let message = Message::new(MessageHeader::from(attestation));
                 if let Err(e) = tx.send(message).await {
                     println!("Sending to publish error: {e:?}");
                 }
+            }
+        }
+    }
+    async fn aggregate(self: Arc<Self>, tx: mpsc::Sender<Message>) -> ! {
+        let slot_duration = Duration::from_secs(SECONDS_PER_SLOT);
+        let mut interval = tokio::time::interval_at(
+            self.network.genesis_instant() + 2 * slot_duration / 3,
+            slot_duration,
+        );
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let Some(ref latest_attestation) = *self.latest_attestation.read().await else {
+                continue;
+            };
+            let current_slot = self.network.current_slot();
+            // Check if we already made an attestation in the current slot
+            if latest_attestation.slot != current_slot {
+                continue;
+            }
+            // Check if the node is supposed to be an aggregator
+            let aggregators = self
+                .network
+                .aggregators(current_slot, latest_attestation.cmid);
+            if !aggregators.contains(&self.vid) {
+                continue;
+            }
+            // Filter only the seen attestations that matches the attestation it made
+            let seen_attestations = self.seen_attestations.read().await;
+            let num_attestors = seen_attestations
+                .as_slice()
+                .iter()
+                .filter(|attestation| {
+                    attestation.slot == latest_attestation.slot
+                        && attestation.cmid == latest_attestation.cmid
+                        && attestation.block_slot == latest_attestation.block_slot
+                })
+                .count();
+            drop(seen_attestations);
+            // Clear the seen attestations
+            (*self.seen_attestations.write().await).clear();
+
+            // Create and send the aggregate
+            let aggregate = Aggregate {
+                aggregator: self.vid,
+                num_attestors,
+                slot: latest_attestation.slot,
+                cmid: latest_attestation.cmid,
+                block_slot: latest_attestation.slot,
+            };
+            let message = Message::new(MessageHeader::from(aggregate));
+            if let Err(e) = tx.send(message).await {
+                println!("Sending to publish error: {e:?}");
             }
         }
     }
@@ -348,6 +429,20 @@ impl EthNode {
             }
         }
         *self.latest_received_block.write().await = Some(block.clone());
+    }
+    async fn on_attestation(self: Arc<Self>, attestation: &Attestation) {
+        let current_slot = self.network.current_slot();
+        let (slot, cmid) = self.network.committee(self.vid, Epoch::from(current_slot));
+        // Check if the attestation is from the correct slot and committee
+        if slot != attestation.slot || cmid != attestation.cmid {
+            return;
+        }
+        // Check if the node is supposed to be an aggregator
+        let aggregators = self.network.aggregators(slot, cmid);
+        if !aggregators.contains(&self.vid) {
+            return;
+        }
+        (*self.seen_attestations.write().await).push(attestation.clone());
     }
     async fn run(self: Arc<Self>, mut swarm: Swarm<EthBehaviour>) -> Result<(), Box<dyn Error>> {
         // All nodes are supposed to join the beacon_block topic
@@ -361,6 +456,10 @@ impl EthNode {
             let topic = GossipTopic::Attestation(cmid);
             swarm.behaviour_mut().gossipsub.subscribe(&topic.into())?;
         }
+
+        // FIXME: We are supposed to join this topic only when we are supposed to propose a block
+        let topic = GossipTopic::BeaconAggregateAndProof;
+        swarm.behaviour_mut().gossipsub.subscribe(&topic.into())?;
 
         // Create a channel to receive messages to publish
         let (tx, mut rx) = mpsc::channel::<Message>(PUBLISH_BUFFER_SIZE);
@@ -377,6 +476,12 @@ impl EthNode {
         let cloned_tx = tx.clone();
         handles.push(tokio::spawn(async move {
             cloned_node.attest(cloned_tx).await;
+        }));
+        // Spawn a job to aggregate attestations
+        let cloned_node = Arc::clone(&self);
+        let cloned_tx = tx.clone();
+        handles.push(tokio::spawn(async move {
+            cloned_node.aggregate(cloned_tx).await;
         }));
 
         let mut handles = futures::future::select_all(handles.into_iter());
@@ -418,6 +523,9 @@ impl EthNode {
                                      block.proposer,
                                      message.id(),
                                 );
+                            },
+                            MessageHeader::Attestation(attestation) => {
+                                self.clone().on_attestation(attestation).await;
                             },
                             _ => {},
                         }
@@ -464,6 +572,46 @@ impl EthNetwork {
         let id = rng.gen_range(0..self.num_validators);
         ValidatorId(id)
     }
+    // Get aggregators of a committee for the given slot committee id
+    fn aggregators(&self, slot: Slot, cmid: CommitteeId) -> Vec<ValidatorId> {
+        let mut members = self.committee_members(slot, cmid);
+        let mut rng = DigestRng::new(Digest::Aggregator(slot, cmid));
+        // Shuffle the members
+        members.as_mut_slice().shuffle(&mut rng);
+        // Assign only the first as aggregators
+        members.truncate(TARGET_AGGREGATORS_PER_COMMITTEE);
+        members
+    }
+    // Get members of a committee for the given slot committee id
+    fn committee_members(&self, slot: Slot, cmid: CommitteeId) -> Vec<ValidatorId> {
+        let epoch = Epoch::from(slot);
+        let mut rng = DigestRng::new(Digest::Committee(epoch));
+
+        // Shuffle all the validators
+        let mut permutation: Vec<usize> = (0..self.num_validators).collect::<Vec<_>>();
+        permutation.as_mut_slice().shuffle(&mut rng);
+
+        let mut reverted_perm = vec![0; self.num_validators];
+        for (vid, idx) in permutation.into_iter().enumerate() {
+            reverted_perm[idx] = vid;
+        }
+
+        let mut result = vec![];
+        let slot_in_epoch = (u64::from(slot) % SLOTS_PER_EPOCH) as usize;
+        let mut vid = usize::from(cmid) + slot_in_epoch * MAX_COMMITTEES_PER_SLOT;
+        while vid < self.num_validators {
+            result.push(ValidatorId::from(reverted_perm[vid]));
+            vid += MAX_COMMITTEES_PER_SLOT * SLOTS_PER_EPOCH as usize;
+        }
+        // FIXME: The following for loop is very slow. Remove it when you have this project
+        // outside of the Shadow tests
+        for &vid in &result {
+            let (actual_slot, actual_cmid) = self.committee(vid, epoch);
+            assert_eq!(actual_slot, slot);
+            assert_eq!(actual_cmid, cmid);
+        }
+        result
+    }
     // Every validator is supposed to make an attestation in every epoch, so it should return the
     // slot and the committee id
     fn committee(&self, vid: ValidatorId, epoch: Epoch) -> (Slot, CommitteeId) {
@@ -486,6 +634,7 @@ impl EthNetwork {
 enum Digest {
     Proposer(Slot),
     Committee(Epoch),
+    Aggregator(Slot, CommitteeId),
 }
 
 impl From<Digest> for [u8; 32] {
@@ -493,6 +642,7 @@ impl From<Digest> for [u8; 32] {
         let prehash = match digest {
             Digest::Proposer(slot) => format!("proposer/{}", slot),
             Digest::Committee(epoch) => format!("committee/{}", epoch),
+            Digest::Aggregator(slot, cmid) => format!("aggregator/{}/{}", slot, cmid),
         };
         let hash = ring::digest::digest(&ring::digest::SHA256, prehash.as_bytes());
         hash.as_ref()[..32].try_into().unwrap()
