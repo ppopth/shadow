@@ -9,6 +9,7 @@ NUM_SLOTS=25
 SLOTS_PER_EPOCH=4
 NUM_EPOCHS=$(($NUM_SLOTS / $SLOTS_PER_EPOCH))
 MAX_COMMITTEES_PER_SLOT=2
+TARGET_AGGREGATORS_PER_COMMITTEE=1
 
 ### Block proposing
 
@@ -58,7 +59,7 @@ for vid in $(seq 0 $(($NUM_VALIDATORS - 1))); do
     fi
 done
 
-### Attestation
+### Attestation and Aggregation
 
 # Verify that all the validators attest in every epoch
 # Skip the first epoch
@@ -88,21 +89,44 @@ for epoch in $(seq 1 $(($NUM_EPOCHS - 1))); do
     done
 done
 
-# Verify that all the validators are evenly distributed to subnets/committees
+# 1. Verify that all the validators are evenly distributed to subnets/committees
+# 2. Verify that all the aggregations are done correctly
 MIN_NUM_OF_MEMBERS=$(($NUM_VALIDATORS / ( $MAX_COMMITTEES_PER_SLOT * $SLOTS_PER_EPOCH )))
 MAX_NUM_OF_MEMBERS=$(($MIN_NUM_OF_MEMBERS + 1))
 for slot in $(seq 1 $(($NUM_SLOTS - 1))); do
     for cmid in $(seq 0 $(($MAX_COMMITTEES_PER_SLOT - 1))); do
         num_members=0
+        num_aggregators=0
         for vid in $(seq 0 $(($NUM_VALIDATORS - 1))); do
             if cat ./hosts/peer$vid/*.stdout | grep \
                 "Published to beacon_attestation_.*\"slot\":$slot\>.*\"cmid\":$cmid\>" >/dev/null
             then
                 num_members=$(($num_members + 1))
             fi
+            line=$(cat ./hosts/peer$vid/*.stdout | \
+                grep "Published to beacon_aggregate_and_proof.*\"slot\":$slot\>.*\"cmid\":$cmid\>" || true)
+            if ! [[ -z "$line" ]]; then
+                num_aggregators=$(($num_aggregators + 1))
+                if [[ $(echo "$line" | wc -l) != 1 ]]; then
+                    printf "Validator $vid at slot $slot aggregated more than once"
+                    exit 1
+                fi
+                attested_block_slot=$(echo "$line" | grep -o "\"block_slot\":[0-9]*" | cut -d ":" -f 2)
+                if [[ "$attested_block_slot" != "$slot" ]]; then
+                    printf "The attested block in the aggregate is not the current slot"
+                    exit 1
+                fi
+            fi
         done
         if [[ $num_members < $MIN_NUM_OF_MEMBERS || $num_members > $MAX_COMMITTEES_PER_SLOT ]]; then
             printf "The number of members of committee $cmid at slot $slot is incorrect"
+            exit 1
+        fi
+        # Take the minimum of the number of members and the target number of aggregators
+        expect_num_aggregators=$(($TARGET_AGGREGATORS_PER_COMMITTEE > $num_members ? \
+            $num_members : $TARGET_AGGREGATORS_PER_COMMITTEE))
+        if [[ $expect_num_aggregators != $num_aggregators ]]; then
+            printf "The number of aggregators of committee $cmid at slot $slot is incorrect"
             exit 1
         fi
     done
