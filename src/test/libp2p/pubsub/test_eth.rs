@@ -124,6 +124,20 @@ macro_rules! wrapper_impl {
                 write!(f, "{}", self.0)
             }
         }
+        impl std::ops::Add<$ty> for $ident {
+            type Output = Self;
+
+            fn add(self, other: $ty) -> Self {
+                Self(<$ty>::from(self) + other)
+            }
+        }
+        impl std::ops::Sub<$ty> for $ident {
+            type Output = Self;
+
+            fn sub(self, other: $ty) -> Self {
+                Self(<$ty>::from(self) - other)
+            }
+        }
     };
 }
 
@@ -181,6 +195,7 @@ impl From<GossipTopic> for TopicHash {
 struct BeaconBlock {
     proposer: ValidatorId,
     slot: Slot,
+    num_attestors: usize,
 }
 #[derive(Serialize, Deserialize, Clone)]
 struct Attestation {
@@ -299,6 +314,7 @@ struct EthNode {
     latest_received_block: RwLock<Option<BeaconBlock>>,
     latest_attestation: RwLock<Option<Attestation>>,
     seen_attestations: RwLock<Vec<Attestation>>,
+    seen_aggregates: RwLock<Vec<Aggregate>>,
 }
 
 impl EthNode {
@@ -309,6 +325,7 @@ impl EthNode {
             latest_received_block: RwLock::new(None),
             latest_attestation: RwLock::new(None),
             seen_attestations: RwLock::new(Vec::new()),
+            seen_aggregates: RwLock::new(Vec::new()),
         }
     }
     async fn propose(self: Arc<Self>, tx: mpsc::Sender<Message>) -> ! {
@@ -324,9 +341,30 @@ impl EthNode {
             let proposer_id = self.network.proposer(slot);
             // If it's itself, publish a block
             if proposer_id == self.vid {
+                // Collect all the aggregates the node has seen to count
+                // the number of attestors
+                let seen_aggregates = self.seen_aggregates.read().await;
+                let mut collected = vec![false; MAX_COMMITTEES_PER_SLOT];
+                let mut num_attestors = 0;
+                for aggregate in seen_aggregates.as_slice() {
+                    if aggregate.slot != slot - 1 {
+                        continue;
+                    }
+                    let cmid = aggregate.cmid;
+                    if !collected[usize::from(cmid)] {
+                        collected[usize::from(cmid)] = true;
+                        num_attestors += aggregate.num_attestors;
+                    }
+                }
+                drop(seen_aggregates);
+                // Clear the seen aggregates
+                (*self.seen_aggregates.write().await).clear();
+
+                // Create and send the block
                 let block = BeaconBlock {
                     proposer: proposer_id,
                     slot,
+                    num_attestors,
                 };
                 self.clone().on_block(&block).await;
                 let message = Message::new(MessageHeader::from(block));
@@ -415,6 +453,7 @@ impl EthNode {
                 cmid: latest_attestation.cmid,
                 block_slot: latest_attestation.slot,
             };
+            self.clone().on_aggregate(&aggregate).await;
             let message = Message::new(MessageHeader::from(aggregate));
             if let Err(e) = tx.send(message).await {
                 println!("Sending to publish error: {e:?}");
@@ -443,6 +482,14 @@ impl EthNode {
             return;
         }
         (*self.seen_attestations.write().await).push(attestation.clone());
+    }
+    async fn on_aggregate(self: Arc<Self>, aggregate: &Aggregate) {
+        let current_slot = self.network.current_slot();
+        let next_slot = current_slot + 1;
+        // Check if the node is supposed to be a proposer in the next slot
+        if self.network.proposer(next_slot) == self.vid {
+            (*self.seen_aggregates.write().await).push(aggregate.clone());
+        }
     }
     async fn run(self: Arc<Self>, mut swarm: Swarm<EthBehaviour>) -> Result<(), Box<dyn Error>> {
         // All nodes are supposed to join the beacon_block topic
@@ -527,7 +574,9 @@ impl EthNode {
                             MessageHeader::Attestation(attestation) => {
                                 self.clone().on_attestation(attestation).await;
                             },
-                            _ => {},
+                            MessageHeader::Aggregate(aggregate) => {
+                                self.clone().on_aggregate(aggregate).await;
+                            },
                         }
                     },
                     _ => {},
