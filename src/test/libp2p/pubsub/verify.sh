@@ -14,6 +14,7 @@ TARGET_AGGREGATORS_PER_COMMITTEE=1
 ### Block proposing
 
 # Verify that the block proposals are done correctly
+num_attestors=0
 # Skip the slot 0, because it's the start of the simulation and the proposer probably cannot make it on time
 for slot in $(seq 1 $(($NUM_SLOTS - 1))); do
     num_published=0
@@ -25,8 +26,18 @@ for slot in $(seq 1 $(($NUM_SLOTS - 1))); do
             proposer_id=$vid
             proposer_msgid=$(echo "$line" | grep -o "msgid=[^ ]*" | cut -d '=' -f 2)
             num_published=$(($num_published + 1))
+            block_num_attestors=$(echo "$line" | grep -o "\"num_attestors\":[0-9]*\>" | cut -d ':' -f 2)
+            num_attestors=$(($num_attestors + $block_num_attestors))
         fi
     done
+    if [[ "$(($slot % $SLOTS_PER_EPOCH))" = 0 ]]; then
+        # Skip the first epoch
+        if [[ "$slot" > "$SLOTS_PER_EPOCH" && "$num_attestors" != "$NUM_VALIDATORS" ]]; then
+            printf "The numbers of attestors in the blocks are incorrect"
+            exit 1
+        fi
+        num_attestors=0
+    fi
     if [[ "$num_published" != 1 || -z "$proposer_msgid" ]]; then
         printf "Some slot has zero or more than one proposers"
         exit 1
