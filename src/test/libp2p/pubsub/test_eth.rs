@@ -6,6 +6,7 @@ use rand::seq::SliceRandom;
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::{error::Error, net::Ipv4Addr, sync::Arc, time::SystemTime};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{Duration, Instant};
@@ -15,6 +16,7 @@ const SLOTS_PER_EPOCH: u64 = 4;
 const SECONDS_PER_SLOT: u64 = 12;
 const MAX_COMMITTEES_PER_SLOT: usize = 2;
 const TARGET_AGGREGATORS_PER_COMMITTEE: usize = 1;
+const MAX_BLOBS_PER_BLOCK: usize = 6;
 // Sat Jan 01 2000 00:01:00 GMT+0000
 const GENESIS_DURATION_SINCE_UNIX_EPOCH: Duration = Duration::from_secs(946684860);
 
@@ -106,7 +108,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 macro_rules! wrapper_impl {
     ($ident:ident, $ty:ty) => {
-        #[derive(Serialize, Deserialize, Debug, PartialOrd, Ord, PartialEq, Eq, Copy, Clone)]
+        #[derive(
+            Serialize, Deserialize, Hash, Debug, PartialOrd, Ord, PartialEq, Eq, Copy, Clone,
+        )]
         struct $ident($ty);
 
         impl From<$ty> for $ident {
@@ -143,6 +147,7 @@ macro_rules! wrapper_impl {
 
 wrapper_impl!(ValidatorId, usize);
 wrapper_impl!(CommitteeId, usize);
+wrapper_impl!(BlobId, usize);
 wrapper_impl!(Slot, u64);
 wrapper_impl!(Epoch, u64);
 
@@ -158,11 +163,14 @@ enum GossipTopic {
     BeaconAggregateAndProof,
     // Subnets are determined by the committee ids
     Attestation(CommitteeId),
+    // Subnets are determined by the blob ids
+    BlobSidecar(BlobId),
 }
 
 const BEACON_BLOCK_TOPIC: &str = "beacon_block";
 const BEACON_AGGREGATE_AND_PROOF_TOPIC: &str = "beacon_aggregate_and_proof";
 const BEACON_ATTESTATION_PREFIX: &str = "beacon_attestation_";
+const BLOB_SIDECAR_PREFIX: &str = "blob_sidecar_";
 
 impl std::fmt::Display for GossipTopic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -170,6 +178,7 @@ impl std::fmt::Display for GossipTopic {
             GossipTopic::BeaconBlock => BEACON_BLOCK_TOPIC.into(),
             GossipTopic::BeaconAggregateAndProof => BEACON_AGGREGATE_AND_PROOF_TOPIC.into(),
             GossipTopic::Attestation(index) => format!("{}{}", BEACON_ATTESTATION_PREFIX, index),
+            GossipTopic::BlobSidecar(index) => format!("{}{}", BLOB_SIDECAR_PREFIX, index),
         };
         write!(f, "{}", topic)
     }
@@ -196,6 +205,7 @@ struct BeaconBlock {
     proposer: ValidatorId,
     slot: Slot,
     num_attestors: usize,
+    num_blobs: usize,
 }
 #[derive(Serialize, Deserialize, Clone)]
 struct Attestation {
@@ -212,11 +222,18 @@ struct Aggregate {
     cmid: CommitteeId,
     block_slot: Slot,
 }
+#[derive(Serialize, Deserialize, Clone)]
+struct BlobSidecar {
+    proposer: ValidatorId,
+    slot: Slot,
+    index: BlobId,
+}
 #[derive(Serialize, Deserialize)]
 enum MessageHeader {
     BeaconBlock(BeaconBlock),
     Attestation(Attestation),
     Aggregate(Aggregate),
+    BlobSidecar(BlobSidecar),
 }
 impl From<BeaconBlock> for MessageHeader {
     fn from(block: BeaconBlock) -> Self {
@@ -233,6 +250,11 @@ impl From<Aggregate> for MessageHeader {
         Self::Aggregate(aggregate)
     }
 }
+impl From<BlobSidecar> for MessageHeader {
+    fn from(blob_sidecar: BlobSidecar) -> Self {
+        Self::BlobSidecar(blob_sidecar)
+    }
+}
 struct Message {
     header: MessageHeader,
     padding: Vec<u8>,
@@ -241,6 +263,7 @@ struct Message {
 const BEACON_BLOCK_PADDING_SIZE: usize = 128 << 10; // 128KB
 const ATTESTATION_PADDING_SIZE: usize = 256;
 const AGGREGATE_PADDING_SIZE: usize = 256;
+const BLOB_SIDECAR_PADDING_SIZE: usize = 128 << 10; // 128KB;
 
 impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -255,6 +278,7 @@ impl Message {
             MessageHeader::BeaconBlock(_) => BEACON_BLOCK_PADDING_SIZE,
             MessageHeader::Attestation(_) => ATTESTATION_PADDING_SIZE,
             MessageHeader::Aggregate(_) => AGGREGATE_PADDING_SIZE,
+            MessageHeader::BlobSidecar(_) => BLOB_SIDECAR_PADDING_SIZE,
         };
         let padding = {
             let mut padding = vec![0; size];
@@ -273,6 +297,9 @@ impl Message {
             MessageHeader::BeaconBlock(_) => GossipTopic::BeaconBlock,
             MessageHeader::Attestation(Attestation { cmid, .. }) => GossipTopic::Attestation(cmid),
             MessageHeader::Aggregate(_) => GossipTopic::BeaconAggregateAndProof,
+            MessageHeader::BlobSidecar(BlobSidecar { index, .. }) => {
+                GossipTopic::BlobSidecar(index)
+            }
         }
     }
     fn encode(&self) -> Vec<u8> {
@@ -315,6 +342,9 @@ struct EthNode {
     latest_attestation: RwLock<Option<Attestation>>,
     seen_attestations: RwLock<Vec<Attestation>>,
     seen_aggregates: RwLock<Vec<Aggregate>>,
+
+    latest_seen_blob_sidecar_slot: RwLock<Slot>,
+    seen_blob_sidecars: RwLock<BTreeMap<BlobId, BlobSidecar>>,
 }
 
 impl EthNode {
@@ -326,6 +356,9 @@ impl EthNode {
             latest_attestation: RwLock::new(None),
             seen_attestations: RwLock::new(Vec::new()),
             seen_aggregates: RwLock::new(Vec::new()),
+
+            latest_seen_blob_sidecar_slot: RwLock::new(Slot(0)),
+            seen_blob_sidecars: RwLock::new(BTreeMap::new()),
         }
     }
     async fn propose(self: Arc<Self>, tx: mpsc::Sender<Message>) -> ! {
@@ -360,11 +393,26 @@ impl EthNode {
                 // Clear the seen aggregates
                 (*self.seen_aggregates.write().await).clear();
 
+                let num_blobs = MAX_BLOBS_PER_BLOCK;
+                // Create and send blobs
+                for blob in 0..num_blobs {
+                    let blob_sidecar = BlobSidecar {
+                        proposer: proposer_id,
+                        slot,
+                        index: BlobId::from(blob),
+                    };
+                    self.clone().on_blob_sidecar(&blob_sidecar).await;
+                    let message = Message::new(MessageHeader::from(blob_sidecar));
+                    if let Err(e) = tx.send(message).await {
+                        println!("Sending to publish error: {e:?}");
+                    }
+                }
                 // Create and send the block
                 let block = BeaconBlock {
                     proposer: proposer_id,
                     slot,
                     num_attestors,
+                    num_blobs,
                 };
                 self.clone().on_block(&block).await;
                 let message = Message::new(MessageHeader::from(block));
@@ -390,6 +438,35 @@ impl EthNode {
                 let Some(ref latest_block) = *self.latest_received_block.read().await else {
                     continue;
                 };
+                // Check if the blobs of the latest block are available
+                if latest_block.slot < *self.latest_seen_blob_sidecar_slot.read().await {
+                    println!(
+                        "Not attesting: latest received blob is newer than the just received block"
+                    );
+                    continue;
+                }
+                if latest_block.slot > *self.latest_seen_blob_sidecar_slot.read().await {
+                    println!("Not attesting: no blob is available");
+                    continue;
+                }
+                let seen_blobs = self.seen_blob_sidecars.read().await;
+                let mut available = true;
+                for (index, blob) in seen_blobs.keys().enumerate() {
+                    if BlobId(index) != *blob {
+                        available = false;
+                        break;
+                    }
+                }
+                if seen_blobs.len() != latest_block.num_blobs {
+                    available = false;
+                }
+                if !available {
+                    println!("Not attesting: some blobs are not available");
+                    continue;
+                }
+                drop(seen_blobs);
+
+                // Create and send the attestation
                 let attestation = Attestation {
                     attestor: self.vid,
                     slot,
@@ -491,6 +568,19 @@ impl EthNode {
             (*self.seen_aggregates.write().await).push(aggregate.clone());
         }
     }
+    async fn on_blob_sidecar(self: Arc<Self>, blob_sidecar: &BlobSidecar) {
+        let latest_blob_slot = *self.latest_seen_blob_sidecar_slot.read().await;
+        if blob_sidecar.slot < latest_blob_slot {
+            println!("Received older blob");
+        }
+        let mut seen_blob_sidecars = self.seen_blob_sidecars.write().await;
+        // If receive a newer blob, clear the cache
+        if blob_sidecar.slot > latest_blob_slot {
+            (*seen_blob_sidecars).clear();
+        }
+        (*seen_blob_sidecars).insert(blob_sidecar.index, blob_sidecar.clone());
+        (*self.latest_seen_blob_sidecar_slot.write().await) = blob_sidecar.slot;
+    }
     async fn run(self: Arc<Self>, mut swarm: Swarm<EthBehaviour>) -> Result<(), Box<dyn Error>> {
         // All nodes are supposed to join the beacon_block topic
         let topic = GossipTopic::BeaconBlock;
@@ -507,6 +597,12 @@ impl EthNode {
         // FIXME: We are supposed to join this topic only when we are supposed to propose a block
         let topic = GossipTopic::BeaconAggregateAndProof;
         swarm.behaviour_mut().gossipsub.subscribe(&topic.into())?;
+
+        // All nodes are supposed to join all the blob sidecar topics
+        for index in 0..MAX_BLOBS_PER_BLOCK {
+            let topic = GossipTopic::BlobSidecar(BlobId::from(index));
+            swarm.behaviour_mut().gossipsub.subscribe(&topic.into())?;
+        }
 
         // Create a channel to receive messages to publish
         let (tx, mut rx) = mpsc::channel::<Message>(PUBLISH_BUFFER_SIZE);
@@ -576,6 +672,9 @@ impl EthNode {
                             },
                             MessageHeader::Aggregate(aggregate) => {
                                 self.clone().on_aggregate(aggregate).await;
+                            },
+                            MessageHeader::BlobSidecar(blob_sidecar) => {
+                                self.clone().on_blob_sidecar(blob_sidecar).await;
                             },
                         }
                     },
