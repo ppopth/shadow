@@ -395,18 +395,18 @@ impl EthNode {
 
                 let num_blobs = MAX_BLOBS_PER_BLOCK;
                 // Create and send blobs
-                for blob in 0..num_blobs {
-                    let blob_sidecar = BlobSidecar {
-                        proposer: proposer_id,
-                        slot,
-                        index: BlobId::from(blob),
-                    };
-                    self.clone().on_blob_sidecar(&blob_sidecar).await;
-                    let message = Message::new(MessageHeader::from(blob_sidecar));
-                    if let Err(e) = tx.send(message).await {
-                        println!("Sending to publish error: {e:?}");
-                    }
-                }
+                // for blob in 0..num_blobs {
+                //     let blob_sidecar = BlobSidecar {
+                //         proposer: proposer_id,
+                //         slot,
+                //         index: BlobId::from(blob),
+                //     };
+                //     self.clone().on_blob_sidecar(&blob_sidecar).await;
+                //     let message = Message::new(MessageHeader::from(blob_sidecar));
+                //     if let Err(e) = tx.send(message).await {
+                //         println!("Sending to publish error: {e:?}");
+                //     }
+                // }
                 // Create and send the block
                 let block = BeaconBlock {
                     proposer: proposer_id,
@@ -439,32 +439,32 @@ impl EthNode {
                     continue;
                 };
                 // Check if the blobs of the latest block are available
-                if latest_block.slot < *self.latest_seen_blob_sidecar_slot.read().await {
-                    println!(
-                        "Not attesting: latest received blob is newer than the just received block"
-                    );
-                    continue;
-                }
-                if latest_block.slot > *self.latest_seen_blob_sidecar_slot.read().await {
-                    println!("Not attesting: no blob is available");
-                    continue;
-                }
-                let seen_blobs = self.seen_blob_sidecars.read().await;
-                let mut available = true;
-                for (index, blob) in seen_blobs.keys().enumerate() {
-                    if BlobId(index) != *blob {
-                        available = false;
-                        break;
-                    }
-                }
-                if seen_blobs.len() != latest_block.num_blobs {
-                    available = false;
-                }
-                if !available {
-                    println!("Not attesting: some blobs are not available");
-                    continue;
-                }
-                drop(seen_blobs);
+                // if latest_block.slot < *self.latest_seen_blob_sidecar_slot.read().await {
+                //     println!(
+                //         "Not attesting: latest received blob is newer than the just received block"
+                //     );
+                //     continue;
+                // }
+                // if latest_block.slot > *self.latest_seen_blob_sidecar_slot.read().await {
+                //     println!("Not attesting: no blob is available");
+                //     continue;
+                // }
+                // let seen_blobs = self.seen_blob_sidecars.read().await;
+                // let mut available = true;
+                // for (index, blob) in seen_blobs.keys().enumerate() {
+                //     if BlobId(index) != *blob {
+                //         available = false;
+                //         break;
+                //     }
+                // }
+                // if seen_blobs.len() != latest_block.num_blobs {
+                //     available = false;
+                // }
+                // if !available {
+                //     println!("Not attesting: some blobs are not available");
+                //     continue;
+                // }
+                // drop(seen_blobs);
 
                 // Create and send the attestation
                 let attestation = Attestation {
@@ -569,17 +569,17 @@ impl EthNode {
         }
     }
     async fn on_blob_sidecar(self: Arc<Self>, blob_sidecar: &BlobSidecar) {
-        let latest_blob_slot = *self.latest_seen_blob_sidecar_slot.read().await;
-        if blob_sidecar.slot < latest_blob_slot {
-            println!("Received older blob");
-        }
-        let mut seen_blob_sidecars = self.seen_blob_sidecars.write().await;
-        // If receive a newer blob, clear the cache
-        if blob_sidecar.slot > latest_blob_slot {
-            (*seen_blob_sidecars).clear();
-        }
-        (*seen_blob_sidecars).insert(blob_sidecar.index, blob_sidecar.clone());
-        (*self.latest_seen_blob_sidecar_slot.write().await) = blob_sidecar.slot;
+        // let latest_blob_slot = *self.latest_seen_blob_sidecar_slot.read().await;
+        // if blob_sidecar.slot < latest_blob_slot {
+        //     println!("Received older blob");
+        // }
+        // let mut seen_blob_sidecars = self.seen_blob_sidecars.write().await;
+        // // If receive a newer blob, clear the cache
+        // if blob_sidecar.slot > latest_blob_slot {
+        //     (*seen_blob_sidecars).clear();
+        // }
+        // (*seen_blob_sidecars).insert(blob_sidecar.index, blob_sidecar.clone());
+        // (*self.latest_seen_blob_sidecar_slot.write().await) = blob_sidecar.slot;
     }
     async fn run(self: Arc<Self>, mut swarm: Swarm<EthBehaviour>) -> Result<(), Box<dyn Error>> {
         // All nodes are supposed to join the beacon_block topic
